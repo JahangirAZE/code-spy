@@ -1,30 +1,29 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import socket from '../utils/socket';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
-    role, taskCard, skeleton, scenario, players,
+    taskCard, skeleton, scenario, players,
     editorContent: initialContent, gameEndTime, isSpy, roomCode, playerName
   } = gameData;
 
-  const [editorContent, setEditorContent]   = useState(initialContent || {});
-  const [timeLeft, setTimeLeft]             = useState('');
-  const [frozen, setFrozen]                 = useState(false);
-  const [frozenMsg, setFrozenMsg]           = useState('');
+  const [, setEditorContent] = useState(initialContent || {});
+  const [timeLeft, setTimeLeft] = useState('');
+  const [frozen, setFrozen] = useState(false);
+  const [frozenMsg, setFrozenMsg] = useState('');
   const [discussionLeft, setDiscussionLeft] = useState(null);
-  const [votingPhase, setVotingPhase]       = useState(false);
-  const [votes, setVotes]                   = useState({ in: 0, total: players.length });
-  const [myVote, setMyVote]                 = useState(null);
-  const [voteResult, setVoteResult]         = useState(null);
-  const [emergencyUsed, setEmergencyUsed]   = useState(false);
-  const [activePlayers, setActivePlayers]   = useState(players);
-  const [typingPlayer, setTypingPlayer]     = useState(null);
+  const [votingPhase, setVotingPhase] = useState(false);
+  const [votes, setVotes] = useState({ in: 0, total: players.length });
+  const [myVote, setMyVote] = useState(null);
+  const [voteResult, setVoteResult] = useState(null);
+  const [emergencyUsed, setEmergencyUsed] = useState(false);
+  const [activePlayers, setActivePlayers] = useState(players);
+  const [typingPlayer, setTypingPlayer] = useState(null);
 
   const editorRef    = useRef(null);
   const monacoRef    = useRef(null);
   const mySocketId   = useRef(socket.id);
-  const decorations  = useRef([]);
 
   // ── Detect language from skeleton ─────────────────────────────
   const language = skeleton?.includes('public class') ? 'java'
@@ -32,12 +31,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
                  : 'csharp';
 
   // ── Build combined editor value ───────────────────────────────
-  function buildFullCode(contents) {
-    return activePlayers.map(p => {
+  const buildFullCode = React.useCallback((contents) => {
+    return activePlayers.map((p) => {
       const region = contents[p.id] || `// ===== ${p.name}'s region =====\n// Write your code here\n`;
       return region;
     }).join('\n\n');
-  }
+  }, [activePlayers]);
 
   const [fullCode, setFullCode] = useState(() => buildFullCode(initialContent || {}));
 
@@ -119,22 +118,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('game_end');
     };
   }, [activePlayers, onGameEnd]);
-
-  // ── Figure out which lines are mine to edit ───────────────────
-  function getMyRegionLines(code) {
-    const lines = code.split('\n');
-    const myMarker = `// ===== ${playerName}`;
-    let inMyRegion = false;
-    let start = -1, end = -1;
-    lines.forEach((line, i) => {
-      if (line.includes(myMarker)) { inMyRegion = true; start = i + 1; }
-      else if (inMyRegion && line.startsWith('// =====') && !line.includes(myMarker)) {
-        end = i; inMyRegion = false;
-      }
-    });
-    if (inMyRegion) end = lines.length;
-    return { start, end };
-  }
 
   // ── Editor mounted ────────────────────────────────────────────
   function handleEditorMount(editor, monaco) {
