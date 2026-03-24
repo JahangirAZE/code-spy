@@ -1,14 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import socket from '../utils/socket';
+import NotificationFeed from './NotificationFeed';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
-    taskCard, skeleton, scenario, players,
-    editorContent: initialContent, gameEndTime, isSpy, roomCode, playerName
+    taskCard,
+    skeleton,
+    scenario,
+    players,
+    editorContent: initialContent,
+    gameEndTime,
+    isSpy,
+    roomCode,
+    playerName
   } = gameData;
 
-  const [, setEditorContent] = useState(initialContent || {});
+  const [editorContent, setEditorContent] = useState(initialContent || {});
   const [timeLeft, setTimeLeft] = useState('');
   const [frozen, setFrozen] = useState(false);
   const [frozenMsg, setFrozenMsg] = useState('');
@@ -16,113 +24,316 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [votingPhase, setVotingPhase] = useState(false);
   const [votes, setVotes] = useState({ in: 0, total: players.length });
   const [myVote, setMyVote] = useState(null);
-  const [voteResult, setVoteResult] = useState(null);
   const [emergencyUsed, setEmergencyUsed] = useState(false);
-  const [activePlayers, setActivePlayers] = useState(players);
-  const [typingPlayer, setTypingPlayer] = useState(null);
+  const [activePlayers, setActivePlayers] = useState(players || []);
+  const [typingPlayers, setTypingPlayers] = useState({});
+  const [notifications, setNotifications] = useState([]);
 
-  const editorRef    = useRef(null);
-  const monacoRef    = useRef(null);
-  const mySocketId   = useRef(socket.id);
+  const typingTimeoutsRef = useRef({});
+  const notificationTimersRef = useRef({});
+  const oneMinuteNotifiedRef = useRef(false);
 
-  // ── Detect language from skeleton ─────────────────────────────
-  const language = skeleton?.includes('public class') ? 'java'
-                 : skeleton?.includes('def ')         ? 'python'
-                 : 'csharp';
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const mySocketId = useRef(socket.id);
 
-  // ── Build combined editor value ───────────────────────────────
-  const buildFullCode = React.useCallback((contents) => {
-    return activePlayers.map((p) => {
-      const region = contents[p.id] || `// ===== ${p.name}'s region =====\n// Write your code here\n`;
-      return region;
-    }).join('\n\n');
-  }, [activePlayers]);
+  const language = skeleton?.includes('public class')
+    ? 'java'
+    : skeleton?.includes('def ')
+    ? 'python'
+    : 'csharp';
+
+  const buildFullCode = useCallback(
+    (contents) => {
+      return activePlayers
+        .map((p) => {
+          const region =
+            contents[p.id] ||
+            `// ===== ${p.name}'s region =====\n// Write your code here\n`;
+          return region;
+        })
+        .join('\n\n');
+    },
+    [activePlayers]
+  );
 
   const [fullCode, setFullCode] = useState(() => buildFullCode(initialContent || {}));
 
-  // ── Timer countdown ───────────────────────────────────────────
+  useEffect(() => {
+    setFullCode(buildFullCode(editorContent));
+  }, [activePlayers, buildFullCode, editorContent]);
+
+  const addOrUpdateNotification = useCallback((item) => {
+    setNotifications((prev) => {
+      const exists = prev.find((n) => n.id === item.id);
+
+      if (exists) {
+        return prev.map((n) => (n.id === item.id ? { ...n, ...item } : n));
+      }
+
+      return [item, ...prev].slice(0, 30);
+    });
+  }, []);
+
+  const removeNotification = useCallback((id) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const pushTimedNotification = useCallback(
+    (item, duration = 3000) => {
+      addOrUpdateNotification(item);
+
+      if (notificationTimersRef.current[item.id]) {
+        clearTimeout(notificationTimersRef.current[item.id]);
+      }
+
+      notificationTimersRef.current[item.id] = setTimeout(() => {
+        removeNotification(item.id);
+        delete notificationTimersRef.current[item.id];
+      }, duration);
+    },
+    [addOrUpdateNotification, removeNotification]
+  );
+
+  const pushPersistentNotification = useCallback(
+    (item) => {
+      addOrUpdateNotification(item);
+    },
+    [addOrUpdateNotification]
+  );
+
+  const markPlayerTyping = useCallback(
+    (playerId, name) => {
+      setTypingPlayers((prev) => ({ ...prev, [playerId]: true }));
+
+      addOrUpdateNotification({
+        id: `typing-${playerId}`,
+        type: 'typing',
+        message: `✍ ${name} is typing...`,
+        createdAt: Date.now()
+      });
+
+      if (typingTimeoutsRef.current[playerId]) {
+        clearTimeout(typingTimeoutsRef.current[playerId]);
+      }
+
+      if (notificationTimersRef.current[`typing-${playerId}`]) {
+        clearTimeout(notificationTimersRef.current[`typing-${playerId}`]);
+      }
+
+      typingTimeoutsRef.current[playerId] = setTimeout(() => {
+        setTypingPlayers((prev) => {
+          const next = { ...prev };
+          delete next[playerId];
+          return next;
+        });
+
+        removeNotification(`typing-${playerId}`);
+        delete typingTimeoutsRef.current[playerId];
+      }, 1500);
+    },
+    [addOrUpdateNotification, removeNotification]
+  );
+
   useEffect(() => {
     const tick = setInterval(() => {
       const remaining = Math.max(0, gameEndTime - Date.now());
       const m = Math.floor(remaining / 60000);
       const s = Math.floor((remaining % 60000) / 1000);
-      setTimeLeft(`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
-      if (remaining === 0) clearInterval(tick);
+      setTimeLeft(`${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
+
+      if (remaining === 0) {
+        clearInterval(tick);
+      }
     }, 500);
+
     return () => clearInterval(tick);
   }, [gameEndTime]);
 
-  // ── Discussion timer ──────────────────────────────────────────
   useEffect(() => {
-    if (!frozen || !discussionLeft) return;
     const tick = setInterval(() => {
-      setDiscussionLeft(prev => {
-        if (prev <= 1) { clearInterval(tick); setVotingPhase(true); return 0; }
-        return prev - 1;
+      const remaining = Math.max(0, gameEndTime - Date.now());
+
+      if (remaining <= 60000 && !oneMinuteNotifiedRef.current) {
+        oneMinuteNotifiedRef.current = true;
+
+        pushPersistentNotification({
+          id: 'timer-1-minute',
+          type: 'timer',
+          message: '⏱ 1 minute left',
+          createdAt: Date.now()
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(tick);
+  }, [gameEndTime, pushPersistentNotification]);
+
+  useEffect(() => {
+    if (!frozen || discussionLeft === null) return;
+
+    addOrUpdateNotification({
+      id: 'discussion-countdown',
+      type: 'timer',
+      message: `🗳 Voting starts in ${discussionLeft}s`,
+      createdAt: Date.now()
+    });
+
+    const tick = setInterval(() => {
+      setDiscussionLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(tick);
+          setVotingPhase(true);
+
+          addOrUpdateNotification({
+            id: 'voting-started',
+            type: 'system',
+            message: '🗳 Voting has started',
+            createdAt: Date.now()
+          });
+
+          removeNotification('discussion-countdown');
+          return 0;
+        }
+
+        const next = prev - 1;
+
+        addOrUpdateNotification({
+          id: 'discussion-countdown',
+          type: 'timer',
+          message: `🗳 Voting starts in ${next}s`,
+          createdAt: Date.now()
+        });
+
+        return next;
       });
     }, 1000);
-    return () => clearInterval(tick);
-  }, [frozen, discussionLeft]);
 
-  // ── Socket events ─────────────────────────────────────────────
+    return () => clearInterval(tick);
+  }, [frozen, discussionLeft, addOrUpdateNotification, removeNotification]);
+
   useEffect(() => {
-    socket.on('code_update', ({ playerId, content }) => {
-      setEditorContent(prev => {
+    const handleCodeUpdate = ({ playerId, content }) => {
+      setEditorContent((prev) => {
         const updated = { ...prev, [playerId]: content };
         setFullCode(buildFullCode(updated));
         return updated;
       });
-      // Show typing indicator
-      const p = activePlayers.find(pl => pl.id === playerId);
-      if (p) {
-        setTypingPlayer(p.name);
-        setTimeout(() => setTypingPlayer(null), 1500);
-      }
-    });
 
-    socket.on('freeze_editor', ({ calledBy, discussionEndTime }) => {
+      const player = activePlayers.find((p) => p.id === playerId);
+      if (player) {
+        markPlayerTyping(playerId, player.name);
+      }
+    };
+
+    const handleFreezeEditor = ({ calledBy, discussionEndTime }) => {
       setFrozen(true);
-      setFrozenMsg(`🚨 Emergency Call by ${calledBy}! Editor frozen.`);
+      setFrozenMsg('');
       setDiscussionLeft(Math.ceil((discussionEndTime - Date.now()) / 1000));
       setVotingPhase(false);
-      setVoteResult(null);
       setMyVote(null);
-    });
 
-    socket.on('vote_update', ({ votesIn, totalPlayers }) => {
+      pushPersistentNotification({
+        id: `emergency-${Date.now()}`,
+        type: 'emergency',
+        message: `🚨 Emergency call by ${calledBy}`,
+        createdAt: Date.now()
+      });
+    };
+
+    const handleVoteUpdate = ({ votesIn, totalPlayers }) => {
       setVotes({ in: votesIn, total: totalPlayers });
-    });
+    };
 
-    socket.on('vote_result', ({ ejected, wasTheSpy, players: updatedPlayers }) => {
-      setVoteResult({ ejected, wasTheSpy });
+    const handleVoteResult = ({ ejected, wasTheSpy, players: updatedPlayers }) => {
       setActivePlayers(updatedPlayers);
       setFrozen(false);
       setVotingPhase(false);
       setFrozenMsg('');
-    });
+      setDiscussionLeft(null);
 
-    socket.on('player_left', ({ players: updatedPlayers }) => {
+      removeNotification('discussion-countdown');
+      removeNotification('voting-started');
+
+      pushPersistentNotification({
+        id: `vote-${Date.now()}`,
+        type: 'system',
+        message: ejected
+          ? `⚖️ ${ejected} was ejected${wasTheSpy ? ' and was the Spy.' : '.'}`
+          : '⚖️ No one was ejected. Game resumes.',
+        createdAt: Date.now()
+      });
+    };
+
+    const handlePlayerLeft = ({ players: updatedPlayers, leftId }) => {
+      const leftPlayer = activePlayers.find((p) => p.id === leftId);
+
       setActivePlayers(updatedPlayers);
-    });
 
-    socket.on('game_end', (data) => {
+      if (leftId) {
+        setTypingPlayers((prev) => {
+          const next = { ...prev };
+          delete next[leftId];
+          return next;
+        });
+
+        removeNotification(`typing-${leftId}`);
+
+        if (typingTimeoutsRef.current[leftId]) {
+          clearTimeout(typingTimeoutsRef.current[leftId]);
+          delete typingTimeoutsRef.current[leftId];
+        }
+      }
+
+      if (leftPlayer) {
+        pushTimedNotification(
+          {
+            id: `left-${leftId}-${Date.now()}`,
+            type: 'system',
+            message: `👋 ${leftPlayer.name} left the room`,
+            createdAt: Date.now()
+          },
+          5000
+        );
+      }
+    };
+
+    const handleGameEnd = (data) => {
       onGameEnd(data);
-    });
+    };
+
+    socket.on('code_update', handleCodeUpdate);
+    socket.on('freeze_editor', handleFreezeEditor);
+    socket.on('vote_update', handleVoteUpdate);
+    socket.on('vote_result', handleVoteResult);
+    socket.on('player_left', handlePlayerLeft);
+    socket.on('game_end', handleGameEnd);
 
     return () => {
-      socket.off('code_update');
-      socket.off('freeze_editor');
-      socket.off('vote_update');
-      socket.off('vote_result');
-      socket.off('player_left');
-      socket.off('game_end');
-    };
-  }, [activePlayers, onGameEnd, buildFullCode]);
+      socket.off('code_update', handleCodeUpdate);
+      socket.off('freeze_editor', handleFreezeEditor);
+      socket.off('vote_update', handleVoteUpdate);
+      socket.off('vote_result', handleVoteResult);
+      socket.off('player_left', handlePlayerLeft);
+      socket.off('game_end', handleGameEnd);
 
-  // ── Editor mounted ────────────────────────────────────────────
+      Object.values(typingTimeoutsRef.current).forEach(clearTimeout);
+      Object.values(notificationTimersRef.current).forEach(clearTimeout);
+      typingTimeoutsRef.current = {};
+      notificationTimersRef.current = {};
+    };
+  }, [
+    activePlayers,
+    onGameEnd,
+    buildFullCode,
+    markPlayerTyping,
+    pushTimedNotification,
+    removeNotification
+  ]);
+
   function handleEditorMount(editor, monaco) {
-    editorRef.current  = editor;
-    monacoRef.current  = monaco;
+    editorRef.current = editor;
+    monacoRef.current = monaco;
 
     monaco.editor.defineTheme('spy-dark', {
       base: 'vs-dark',
@@ -130,139 +341,141 @@ export default function GameScreen({ gameData, onGameEnd }) {
       rules: [
         { token: 'comment', foreground: '4a7c59' },
         { token: 'keyword', foreground: '66d9e8' },
-        { token: 'string',  foreground: 'a8d8a8' },
-        { token: 'number',  foreground: 'f8a95a' },
+        { token: 'string', foreground: 'a8d8a8' },
+        { token: 'number', foreground: 'f8a95a' }
       ],
       colors: {
-        'editor.background':          '#060b14',
-        'editor.foreground':          '#c9e8c9',
+        'editor.background': '#060b14',
+        'editor.foreground': '#c9e8c9',
         'editor.lineHighlightBackground': '#0d1f2d',
-        'editorLineNumber.foreground':'#2a4a3a',
-        'editorCursor.foreground':    '#00ff88',
-        'editor.selectionBackground': '#1a3a2a',
+        'editorLineNumber.foreground': '#2a4a3a',
+        'editorCursor.foreground': '#00ff88',
+        'editor.selectionBackground': '#1a3a2a'
       }
     });
+
     monaco.editor.setTheme('spy-dark');
   }
 
-  // ── Handle local edits — only send my region ──────────────────
-  function handleEditorChange(value) {
+  function handleEditorChange(value = '') {
     if (frozen) return;
+
     setFullCode(value);
 
-    // Extract just my region and send it
     const lines = value.split('\n');
     const myMarker = `// ===== ${playerName}`;
     let inMine = false;
-    let myLines = [];
+    const myLines = [];
+
     for (const line of lines) {
-      if (line.includes(myMarker)) { inMine = true; myLines.push(line); continue; }
-      if (inMine && line.startsWith('// =====') && !line.includes(myMarker)) break;
-      if (inMine) myLines.push(line);
+      if (line.includes(myMarker)) {
+        inMine = true;
+        myLines.push(line);
+        continue;
+      }
+
+      if (inMine && line.startsWith('// =====') && !line.includes(myMarker)) {
+        break;
+      }
+
+      if (inMine) {
+        myLines.push(line);
+      }
     }
+
     const myContent = myLines.join('\n');
-    setEditorContent(prev => ({ ...prev, [mySocketId.current]: myContent }));
+
+    setEditorContent((prev) => ({ ...prev, [mySocketId.current]: myContent }));
+
+    markPlayerTyping(mySocketId.current, playerName);
+
     socket.emit('code_delta', { roomCode, content: myContent });
   }
 
-  // ── Emergency call ────────────────────────────────────────────
   function handleEmergency() {
     if (emergencyUsed || frozen) return;
     setEmergencyUsed(true);
     socket.emit('emergency_call', { roomCode });
   }
 
-  // ── Cast vote ─────────────────────────────────────────────────
   function castVote(targetId) {
     if (myVote) return;
     setMyVote(targetId);
     socket.emit('cast_vote', { roomCode, votedFor: targetId });
   }
 
-  // ── Timer color ───────────────────────────────────────────────
-  const [mins] = timeLeft.split(':');
-  const timerColor = parseInt(mins) <= 1 ? 'text-red-400 blink'
-                   : parseInt(mins) <= 3 ? 'text-yellow-400'
-                   : 'text-green-400';
+  const [mins = '00'] = timeLeft.split(':');
+  const parsedMins = parseInt(mins, 10);
+  const timerColor =
+    parsedMins <= 1
+      ? 'text-red-400 blink'
+      : parsedMins <= 3
+      ? 'text-yellow-400'
+      : 'text-green-400';
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-950" style={{ height: '100vh' }}>
-
-      {/* ── TOP BAR ── */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         <span className="text-green-500 font-display tracking-widest text-lg">CODE SPY</span>
+
         <div className="flex items-center gap-4">
           <span className="text-gray-600 font-mono text-xs">{roomCode}</span>
           <span className={`font-display text-2xl ${timerColor}`}>⏱ {timeLeft}</span>
         </div>
-        <span className={`font-mono text-xs px-2 py-1 rounded ${
-          isSpy ? 'bg-red-950 text-red-400 border border-red-800'
-                : 'bg-green-950 text-green-400 border border-green-800'
-        }`}>
+
+        <span
+          className={`font-mono text-xs px-2 py-1 rounded ${
+            isSpy
+              ? 'bg-red-950 text-red-400 border border-red-800'
+              : 'bg-green-950 text-green-400 border border-green-800'
+          }`}
+        >
           {isSpy ? '🔴 SPY' : '🟢 CODER'}
         </span>
       </div>
 
-      {/* ── FREEZE BANNER ── */}
-      {frozen && (
-        <div className="bg-red-950 border-b border-red-800 px-4 py-2 flex items-center justify-between flex-shrink-0">
-          <span className="text-red-400 font-mono text-sm">{frozenMsg}</span>
-          {!votingPhase && discussionLeft !== null && (
-            <span className="text-red-300 font-mono text-sm">
-              voting in {discussionLeft}s
-            </span>
-          )}
-          {votingPhase && (
-            <span className="text-yellow-400 font-mono text-sm blink">VOTE NOW</span>
-          )}
-        </div>
-      )}
-
-      {/* ── VOTE RESULT BANNER ── */}
-      {voteResult && (
-        <div className="bg-blue-950 border-b border-blue-800 px-4 py-2 text-center flex-shrink-0">
-          {voteResult.ejected
-            ? <span className="text-blue-300 font-mono text-sm">
-                ⚖️ <strong>{voteResult.ejected}</strong> was ejected.{' '}
-                {voteResult.wasTheSpy ? '✅ They were the Spy!' : '❌ They were innocent.'}
-              </span>
-            : <span className="text-blue-300 font-mono text-sm">⚖️ No one was ejected. Game resumes.</span>
-          }
-        </div>
-      )}
-
-      {/* ── MAIN CONTENT ── */}
       <div className="flex flex-1 overflow-hidden">
-
-        {/* LEFT: Players panel */}
-        <div className="w-44 border-r border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
+        <div className="w-56 border-r border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
           <div className="px-3 py-2 border-b border-gray-800">
             <p className="text-gray-600 font-mono text-xs tracking-widest">PLAYERS</p>
           </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-2">
-            {activePlayers.map(p => {
+
+          <div className="max-h-64 overflow-y-auto p-2 space-y-2">
+            {activePlayers.map((p) => {
               const isMe = p.id === mySocketId.current;
-              const isTyping = typingPlayer === p.name;
+              const isTyping = !!typingPlayers[p.id];
+
               return (
-                <div key={p.id} className={`rounded p-2 border ${
-                  isMe ? 'border-green-800 bg-green-950'
-                       : 'border-gray-800 bg-gray-900'
-                }`}>
+                <div
+                  key={p.id}
+                  className={`rounded p-2 border ${
+                    isMe ? 'border-green-800 bg-green-950' : 'border-gray-800 bg-gray-900'
+                  }`}
+                >
                   <div className="flex items-center gap-1">
                     <span className={`text-xs ${isMe ? 'text-green-400' : 'text-gray-400'}`}>
                       {isTyping ? '✍️' : '●'}
                     </span>
-                    <span className={`font-mono text-xs truncate ${isMe ? 'text-green-300' : 'text-gray-300'}`}>
+
+                    <span
+                      className={`font-mono text-xs truncate ${
+                        isMe ? 'text-green-300' : 'text-gray-300'
+                      }`}
+                    >
                       {p.name}
                     </span>
                   </div>
+
                   {isMe && <div className="text-green-700 font-mono text-xs mt-1">you</div>}
                 </div>
               );
             })}
           </div>
 
-          {/* Emergency button */}
+          <div className="flex-1 min-h-0">
+            <NotificationFeed items={notifications} />
+          </div>
+
           <div className="p-2 border-t border-gray-800">
             <button
               onClick={handleEmergency}
@@ -278,13 +491,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
           </div>
         </div>
 
-        {/* CENTER: Editor */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {typingPlayer && (
-            <div className="px-3 py-1 bg-gray-900 border-b border-gray-800 flex-shrink-0">
-              <span className="text-yellow-600 font-mono text-xs">✍ {typingPlayer} is typing...</span>
-            </div>
-          )}
           <div className="flex-1 overflow-hidden">
             <Editor
               height="100%"
@@ -303,41 +510,50 @@ export default function GameScreen({ gameData, onGameEnd }) {
                 readOnly: frozen,
                 cursorBlinking: 'smooth',
                 smoothScrolling: true,
-                contextmenu: false,
+                contextmenu: false
               }}
             />
           </div>
         </div>
 
-        {/* RIGHT: Task card */}
         <div className="w-56 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
           <div className="px-3 py-2 border-b border-gray-800">
             <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
           </div>
+
           <div className="flex-1 overflow-y-auto p-3">
             {isSpy ? (
               <div className="space-y-3">
                 <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
+
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                   <p className="text-red-300 font-mono text-xs">{taskCard?.method}</p>
                 </div>
+
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">SABOTAGE</p>
-                  <p className="text-red-200 font-mono text-xs leading-relaxed">{taskCard?.sabotage}</p>
+                  <p className="text-red-200 font-mono text-xs leading-relaxed">
+                    {taskCard?.sabotage}
+                  </p>
                 </div>
+
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">COVER</p>
-                  <p className="text-orange-300 font-mono text-xs leading-relaxed">{taskCard?.cover}</p>
+                  <p className="text-orange-300 font-mono text-xs leading-relaxed">
+                    {taskCard?.cover}
+                  </p>
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
                 <div className="text-green-400 font-mono text-xs font-bold">🟢 TASK — CODER</div>
+
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                   <p className="text-green-300 font-mono text-xs">{taskCard?.method}</p>
                 </div>
+
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">RULES</p>
                   <ul className="space-y-1">
@@ -348,16 +564,18 @@ export default function GameScreen({ gameData, onGameEnd }) {
                     ))}
                   </ul>
                 </div>
+
                 {taskCard?.hint && (
                   <div>
                     <p className="text-gray-500 font-mono text-xs mb-1">HINT</p>
-                    <p className="text-yellow-600 font-mono text-xs leading-relaxed">{taskCard.hint}</p>
+                    <p className="text-yellow-600 font-mono text-xs leading-relaxed">
+                      {taskCard.hint}
+                    </p>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Tests */}
             <div className="mt-4 pt-4 border-t border-gray-800">
               <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">TEST CASES</p>
               {(scenario?.tests || []).map((t, i) => (
@@ -370,17 +588,21 @@ export default function GameScreen({ gameData, onGameEnd }) {
         </div>
       </div>
 
-      {/* ── VOTE MODAL ── */}
       {votingPhase && (
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-red-800 rounded-lg p-6 w-full max-w-sm">
-            <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">VOTE</h2>
+            <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">
+              VOTE
+            </h2>
+
             <p className="text-gray-500 font-mono text-xs text-center mb-4">
               Who is the Spy? ({votes.in}/{votes.total} votes cast)
             </p>
+
             <div className="space-y-2 mb-4">
-              {activePlayers.map(p => {
+              {activePlayers.map((p) => {
                 const isMe = p.id === mySocketId.current;
+
                 return (
                   <button
                     key={p.id}
@@ -398,6 +620,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
                   </button>
                 );
               })}
+
               <button
                 onClick={() => castVote('skip')}
                 disabled={!!myVote}
@@ -410,6 +633,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
                 Skip (don't eject anyone)
               </button>
             </div>
+
             {myVote && (
               <p className="text-green-600 font-mono text-xs text-center">
                 ✓ Vote cast. Waiting for others...
