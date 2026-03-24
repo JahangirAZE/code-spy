@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.length('/', (req, res) => {
+app.get('/', (req, res) => {
   res.send('Code Spy server is running');
 })
 
