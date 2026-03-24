@@ -4,20 +4,30 @@ function createRoom(roomCode, hostId, hostName) {
   const room = {
     code: roomCode,
     hostId,
-    players: [{ id: hostId, name: hostName, ready: false }],
     state: 'lobby',
+    players: [
+      { 
+        id: hostId, 
+        name: hostName, 
+        ready: false 
+      }
+    ],
+    
     language: 'java',
     scenario: 'bank',
     timerMinutes: 8,
-    spyId: null,
     roles: {},
-    taskCards: {}, 
-    editorContent: {},
-    votes: {},
+    taskCards: {},
     emergencyCalls: {},
+    votes: {},
+    editorContent: {},
+    editorVersions: {},
+    spyId: null,
+    gameEndTime: null,
+    minPlayers: 4,
+    maxPlayers: 6,
     votingInitiator: null,
     discussionEndTime: null,
-    gameEndTime: null,
   };
   rooms.set(roomCode, room);
   return room;

@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import socket from '../utils/socket';
 
+const MIN_PLAYERS = 4;
+const MAX_PLAYERS = 6;
+
 export default function LobbyScreen({ onGameStart }) {
   const [phase, setPhase] = useState('home');
   const [playerName, setPlayerName] = useState('');
@@ -22,12 +25,12 @@ export default function LobbyScreen({ onGameStart }) {
       setPhase('waiting');
     });
 
-    socket.on('player_joined', ({ players }) => {
-      setRoomData(prev => prev ? { ...prev, players } : prev);
+    socket.on('player_joined', ({ players, minPlayers, maxPlayers }) => {
+      setRoomData(prev => prev ? { ...prev, players, minPlayers, maxPlayers } : prev);
     });
 
-    socket.on('player_left', ({ players }) => {
-      setRoomData(prev => prev ? { ...prev, players } : prev);
+    socket.on('player_left', ({ players, minPlayers, maxPlayers }) => {
+      setRoomData(prev => prev ? { ...prev, players, minPlayers, maxPlayers } : prev);
     });
 
     socket.on('settings_updated', (s) => {
@@ -53,7 +56,10 @@ export default function LobbyScreen({ onGameStart }) {
     if (!playerName.trim()) return setError('Enter your name first.');
     if (!roomCode.trim()) return setError('Enter a room code.');
     setError('');
-    socket.emit('join_room', { roomCode: roomCode.trim().toUpperCase(), playerName: playerName.trim() });
+    socket.emit('join_room', {
+      roomCode: roomCode.trim().toUpperCase(),
+      playerName: playerName.trim()
+    });
   }
 
   function handleSettingChange(key, value) {
@@ -92,20 +98,22 @@ export default function LobbyScreen({ onGameStart }) {
         {error && <p className="text-red-400 font-mono text-sm text-center">{error}</p>}
         <button className={btnPrimary} onClick={() => {
           if (!playerName.trim()) return setError('Enter your name first.');
-          setError(''); setPhase('create');
+          setError('');
+          setPhase('create');
         }}>
           ▶ CREATE ROOM
         </button>
         <button className={btnSecondary} onClick={() => {
           if (!playerName.trim()) return setError('Enter your name first.');
-          setError(''); setPhase('join');
+          setError('');
+          setPhase('join');
         }}>
           ⌨ JOIN ROOM
         </button>
       </div>
 
       <div className="mt-16 text-gray-700 font-mono text-xs text-center space-y-1">
-        <p>2–4 players · live code editor · 1 spy among you</p>
+        <p>4–6 players · live code editor</p>
         <p>think among us, but the murder weapon is a null pointer exception</p>
       </div>
     </div>
@@ -145,7 +153,10 @@ export default function LobbyScreen({ onGameStart }) {
 
   if (phase === 'waiting' && roomData) {
     const { isHost, players, scenarios } = roomData;
-    const canStart = players.length >= 2;
+    const minPlayers = roomData.minPlayers || MIN_PLAYERS;
+    const maxPlayers = roomData.maxPlayers || MAX_PLAYERS;
+    const canStart = players.length >= minPlayers;
+    const remainingSlots = Math.max(0, maxPlayers - players.length);
 
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6">
@@ -157,19 +168,28 @@ export default function LobbyScreen({ onGameStart }) {
           </div>
 
           <div className="border border-gray-800 rounded-lg p-4 mb-6 bg-gray-950">
-            <p className="text-gray-500 font-mono text-xs tracking-widest mb-3">PLAYERS ({players.length}/4)</p>
-            <div className="space-y-2">
-              {players.map((p, i) => (
-                <div key={p.id} className="flex items-center gap-3">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-gray-500 font-mono text-xs tracking-widest">
+                PLAYERS ({players.length}/{maxPlayers})
+              </p>
+              <p className="text-gray-600 font-mono text-xs">
+                min {minPlayers} to start
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {players.map((p) => (
+                <div key={p.id} className="flex items-center gap-3 border border-gray-800 rounded px-3 py-2 bg-gray-900">
                   <span className="text-green-500 text-xs">▶</span>
-                  <span className="text-green-300 font-mono">{p.name}</span>
+                  <span className="text-green-300 font-mono truncate">{p.name}</span>
                   {p.id === roomData.players[0]?.id && (
                     <span className="text-yellow-600 font-mono text-xs ml-auto">HOST</span>
                   )}
                 </div>
               ))}
-              {Array.from({ length: 4 - players.length }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3">
+
+              {Array.from({ length: remainingSlots }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 border border-dashed border-gray-800 rounded px-3 py-2 bg-gray-950">
                   <span className="text-gray-700 text-xs">·</span>
                   <span className="text-gray-700 font-mono text-sm">waiting for player...</span>
                 </div>
@@ -193,6 +213,7 @@ export default function LobbyScreen({ onGameStart }) {
                     ))}
                   </select>
                 </div>
+
                 <div>
                   <label className="text-gray-400 font-mono text-xs mb-1 block">ROUND TIMER</label>
                   <div className="flex gap-2">
@@ -225,12 +246,15 @@ export default function LobbyScreen({ onGameStart }) {
           )}
 
           {error && <p className="text-red-400 font-mono text-sm text-center mb-3">{error}</p>}
+
           {isHost && (
             <button
               className={`${canStart ? btnPrimary : 'w-full py-3 rounded font-mono font-bold bg-gray-800 text-gray-600 cursor-not-allowed'}`}
               onClick={canStart ? handleStartGame : undefined}
             >
-              {canStart ? '🚀 START GAME' : `waiting for players (${players.length}/2 min)`}
+              {canStart
+                ? `🚀 START GAME (${players.length}/${maxPlayers})`
+                : `waiting for players (${players.length}/${minPlayers} min)`}
             </button>
           )}
         </div>

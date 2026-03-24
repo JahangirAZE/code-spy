@@ -3,6 +3,9 @@ const { createRoom, getRoom, removeRoom } = require('./gameState');
 const { getScenario, listScenarios } = require('./scenarios');
 const { generateRoomCode } = require('./roomCodeGenerator');
 
+const MIN_PLAYERS = 4;
+const MAX_PLAYERS = 6;
+
 function canEditRegion(room, editorSocketId, targetPlayerId) {
   if (!room || room.state !== 'playing') return false;
   if (!room.players.some((p) => p.id === editorSocketId)) return false;
@@ -21,7 +24,9 @@ function handleConnection(socket, io) {
     socket.emit('room_created', {
       roomCode,
       players: room.players,
-      scenarios: listScenarios()
+      scenarios: listScenarios(),
+      minPlayers: MIN_PLAYERS,
+      maxPlayers: MAX_PLAYERS
     });
     console.log(`🏠 Room ${roomCode} created by ${playerName}`);
   });
@@ -30,18 +35,28 @@ function handleConnection(socket, io) {
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', { message: 'Room not found.' });
     if (room.state !== 'lobby') return socket.emit('error', { message: 'Game already started.' });
-    if (room.players.length >= 4) return socket.emit('error', { message: 'Room is full.' });
+    if (room.players.length >= MAX_PLAYERS) {
+      return socket.emit('error', { message: 'Room is full.' });
+    }
 
     room.players.push({ id: socket.id, name: playerName, ready: false });
     socket.join(roomCode);
 
-    io.to(roomCode).emit('player_joined', { players: room.players });
+    io.to(roomCode).emit('player_joined', { 
+      players: room.players,
+      minPlayers: MIN_PLAYERS,
+      maxPlayers: MAX_PLAYERS
+    });
+
     socket.emit('joined_room', {
       roomCode,
       players: room.players,
       isHost: false,
-      scenarios: listScenarios()
+      scenarios: listScenarios(),
+      minPlayers: MIN_PLAYERS,
+      maxPlayers: MAX_PLAYERS
     });
+
     console.log(`👤 ${playerName} joined room ${roomCode}`);
   });
 
@@ -61,7 +76,9 @@ function handleConnection(socket, io) {
   socket.on('start_game', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
-    if (room.players.length < 2) return socket.emit('error', { message: 'Need at least 2 players.' });
+    if (room.players.length < MIN_PLAYERS) {
+      return socket.emit('error', { message: `Need at least ${MIN_PLAYERS} players.` });
+    }
 
     const scenario = getScenario(room.scenario);
 
@@ -193,7 +210,12 @@ function handleConnection(socket, io) {
       const idx = room.players.findIndex((p) => p.id === socket.id);
       if (idx !== -1) {
         room.players.splice(idx, 1);
-        io.to(code).emit('player_left', { players: room.players, leftId: socket.id });
+        io.to(code).emit('player_left', { 
+          players: room.players, 
+          leftId: socket.id,
+          minPlayers: MIN_PLAYERS,
+          maxPlayers: MAX_PLAYERS
+        });
         if (room.players.length === 0) removeRoom(code);
         break;
       }
