@@ -420,7 +420,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {activePlayers.map((p) => {
-            const editable = !frozen && (isSpy || p.id === mySocketId.current);
+            const editable = !frozen && p.id === mySocketId.current;
             return (
               <RegionEditor
                 key={p.id}
