@@ -2,14 +2,13 @@ import React, { useState, useEffect } from 'react';
 import socket from '../utils/socket';
 
 export default function LobbyScreen({ onGameStart }) {
-  const [phase, setPhase] = useState('home'); // home | create | join | waiting
+  const [phase, setPhase] = useState('home');
   const [playerName, setPlayerName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [error, setError] = useState('');
-  const [roomData, setRoomData] = useState(null);   // { roomCode, players, isHost, scenarios }
+  const [roomData, setRoomData] = useState(null);
   const [settings, setSettings] = useState({ scenario: 'bank', timerMinutes: 8 });
 
-  // ── Connect socket once ───────────────────────────────────────
   useEffect(() => {
     socket.connect();
 
@@ -44,7 +43,6 @@ export default function LobbyScreen({ onGameStart }) {
     return () => socket.removeAllListeners();
   }, [roomData?.roomCode, playerName, onGameStart]);
 
-  // ── Actions ───────────────────────────────────────────────────
   function handleCreate() {
     if (!playerName.trim()) return setError('Enter your name first.');
     setError('');
@@ -68,7 +66,6 @@ export default function LobbyScreen({ onGameStart }) {
     socket.emit('start_game', { roomCode: roomData.roomCode });
   }
 
-  // ── Render helpers ────────────────────────────────────────────
   const inputClass =
     'w-full bg-gray-900 border border-green-800 text-green-300 font-mono px-4 py-3 rounded focus:outline-none focus:border-green-400 placeholder-gray-600';
   const btnPrimary =
@@ -76,7 +73,6 @@ export default function LobbyScreen({ onGameStart }) {
   const btnSecondary =
     'w-full bg-transparent border border-green-700 hover:border-green-400 text-green-400 font-mono py-3 rounded transition-colors';
 
-  // ── HOME ──────────────────────────────────────────────────────
   if (phase === 'home') return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="mb-10 text-center">
@@ -91,7 +87,7 @@ export default function LobbyScreen({ onGameStart }) {
           value={playerName}
           onChange={e => setPlayerName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && setPhase('create')}
-          maxLength={20}
+          maxLength={10}
         />
         {error && <p className="text-red-400 font-mono text-sm text-center">{error}</p>}
         <button className={btnPrimary} onClick={() => {
@@ -115,7 +111,6 @@ export default function LobbyScreen({ onGameStart }) {
     </div>
   );
 
-  // ── CREATE ────────────────────────────────────────────────────
   if (phase === 'create') return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-4">
@@ -128,7 +123,6 @@ export default function LobbyScreen({ onGameStart }) {
     </div>
   );
 
-  // ── JOIN ──────────────────────────────────────────────────────
   if (phase === 'join') return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-4">
@@ -149,7 +143,6 @@ export default function LobbyScreen({ onGameStart }) {
     </div>
   );
 
-  // ── WAITING ROOM ──────────────────────────────────────────────
   if (phase === 'waiting' && roomData) {
     const { isHost, players, scenarios } = roomData;
     const canStart = players.length >= 2;
@@ -157,14 +150,12 @@ export default function LobbyScreen({ onGameStart }) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-lg">
-          {/* Room code banner */}
           <div className="border border-green-800 rounded-lg p-6 mb-6 text-center bg-gray-950">
             <p className="text-gray-500 font-mono text-xs mb-1 tracking-widest">ROOM CODE</p>
             <p className="text-green-400 font-display text-4xl tracking-widest">{roomData.roomCode}</p>
             <p className="text-gray-600 font-mono text-xs mt-2">share this with your friends</p>
           </div>
 
-          {/* Players list */}
           <div className="border border-gray-800 rounded-lg p-4 mb-6 bg-gray-950">
             <p className="text-gray-500 font-mono text-xs tracking-widest mb-3">PLAYERS ({players.length}/4)</p>
             <div className="space-y-2">
@@ -186,11 +177,9 @@ export default function LobbyScreen({ onGameStart }) {
             </div>
           </div>
 
-          {/* Host settings */}
           {isHost && (
             <div className="border border-gray-800 rounded-lg p-4 mb-6 bg-gray-950">
               <p className="text-gray-500 font-mono text-xs tracking-widest mb-4">GAME SETTINGS</p>
-
               <div className="space-y-4">
                 <div>
                   <label className="text-gray-400 font-mono text-xs mb-1 block">SCENARIO</label>
@@ -204,7 +193,6 @@ export default function LobbyScreen({ onGameStart }) {
                     ))}
                   </select>
                 </div>
-
                 <div>
                   <label className="text-gray-400 font-mono text-xs mb-1 block">ROUND TIMER</label>
                   <div className="flex gap-2">
@@ -227,7 +215,6 @@ export default function LobbyScreen({ onGameStart }) {
             </div>
           )}
 
-          {/* Non-host sees settings read-only */}
           {!isHost && (
             <div className="border border-gray-800 rounded-lg p-4 mb-6 bg-gray-950 text-center">
               <p className="text-gray-600 font-mono text-sm">waiting for host to start the game...</p>
@@ -237,7 +224,6 @@ export default function LobbyScreen({ onGameStart }) {
             </div>
           )}
 
-          {/* Start / error */}
           {error && <p className="text-red-400 font-mono text-sm text-center mb-3">{error}</p>}
           {isHost && (
             <button
