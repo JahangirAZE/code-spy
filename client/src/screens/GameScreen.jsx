@@ -311,7 +311,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   function handleRegionChange(targetPlayerId, value = '') {
     if (frozen) return;
-    const canEdit = isSpy || targetPlayerId === mySocketId.current;
+    const canEdit = targetPlayerId === mySocketId.current;
     if (!canEdit) {
       pushTimedNotification({
         id: `forbidden-${Date.now()}`,

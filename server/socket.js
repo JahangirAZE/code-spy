@@ -16,9 +16,6 @@ function canEditRegion(room, editorSocketId, targetPlayerId) {
   if (!room.players.some((p) => p.id === editorSocketId)) return false;
   if (!room.players.some((p) => p.id === targetPlayerId)) return false;
 
-  const isSpy = room.spyId === editorSocketId;
-  if (isSpy) return true;
-
   return editorSocketId === targetPlayerId;
 }
 
