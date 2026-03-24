@@ -139,9 +139,11 @@ function handleConnection(socket, io) {
       });
     }
 
+    const isSpy = room.spyId === socket.id;
+    const isOwnRegion = socket.id === targetPlayerId;
     const serverVersion = room.editorVersions?.[targetPlayerId] || 0;
 
-    if (version !== undefined && version < serverVersion) {
+    if (isSpy && !isOwnRegion && version !== undefined && version < serverVersion - 2) {
       return socket.emit('region_resync', {
         targetPlayerId,
         content: room.editorContent[targetPlayerId],

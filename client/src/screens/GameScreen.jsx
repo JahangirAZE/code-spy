@@ -34,8 +34,13 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const notificationTimersRef = useRef({});
   const oneMinuteNotifiedRef = useRef(false);
   const mySocketId = useRef(socket.id);
+  const editorVersionsRef = useRef(socket.id);
 
   const language = skeleton?.includes('public class') ? 'java' : skeleton?.includes('def ') ? 'python' : 'csharp';
+
+  useEffect(() => {
+    editorVersionsRef.current = editorVersions;
+  }, [editorVersions]);
 
   const debouncedEmit = useMemo(
     () =>
@@ -245,8 +250,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     const handleRegionUpdated = ({ editorId, targetPlayerId, content, version }) => {
       if (editorId === mySocketId.current) return;
+      if (targetPlayerId === mySocketId.current) return;
       setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
       setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
+      editorVersionsRef.current[targetPlayerId] = version;
       const editorPlayer = activePlayers.find((p) => p.id === editorId);
       if (editorPlayer) markPlayerTyping(editorId, editorPlayer.name);
     };
@@ -290,6 +297,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('edit_rejected', handleEditRejected);
       Object.values(typingTimeouts).forEach(clearTimeout);
       Object.values(notificationTimers).forEach(clearTimeout);
+      debouncedEmit.cancel();
     };
   }, [
     activePlayers,
@@ -316,7 +324,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
     setEditorContent((prev) => ({ ...prev, [targetPlayerId]: value }));
     markPlayerTyping(mySocketId.current, playerName);
 
-    const currentVersion = editorVersions[targetPlayerId] || 0;
+    const currentVersion = editorVersionsRef.current[targetPlayerId] || 0;
+    editorVersionsRef.current[targetPlayerId] = currentVersion + 1;
+    setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: currentVersion + 1 }));
     debouncedEmit(roomCode, targetPlayerId, value, currentVersion);
   }
 

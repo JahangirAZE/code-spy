@@ -28,8 +28,8 @@ export default function App() {
     <>
       <div className="scanline" />
       {screen === 'lobby' && <LobbyScreen onGameStart={goToGame} />}
-      {screen === 'game'  && <GameScreen gameData={gameData} onGameEnd={goToEnd} />}
-      {screen === 'end'   && <EndScreen endData={endData} onPlayAgain={goToLobby} />}
+      {screen === 'game' && <GameScreen gameData={gameData} onGameEnd={goToEnd} />}
+      {screen === 'end' && <EndScreen endData={endData} onPlayAgain={goToLobby} />}
     </>
   );
 }
