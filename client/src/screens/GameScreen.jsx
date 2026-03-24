@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import debounce from 'lodash/debounce';
 import socket from '../utils/socket';
 import NotificationFeed from './NotificationFeed';
 import RegionEditor from './RegionEditor';
@@ -17,6 +18,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
   } = gameData;
 
   const [editorContent, setEditorContent] = useState(initialContent || {});
+  const [editorVersions, setEditorVersions] = useState({});
   const [timeLeft, setTimeLeft] = useState('');
   const [frozen, setFrozen] = useState(false);
   const [discussionLeft, setDiscussionLeft] = useState(null);
@@ -35,14 +37,20 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const language = skeleton?.includes('public class') ? 'java' : skeleton?.includes('def ') ? 'python' : 'csharp';
 
+  const debouncedEmit = useMemo(
+    () =>
+      debounce((roomCode, targetPlayerId, content, version) => {
+        socket.emit('region_update', { roomCode, targetPlayerId, content, version });
+      }, 80),
+    [roomCode]
+  );
+
   const addOrUpdateNotification = useCallback((item) => {
     setNotifications((prev) => {
       const exists = prev.find((n) => n.id === item.id);
-
       if (exists) {
         return prev.map((n) => (n.id === item.id ? { ...n, ...item } : n));
       }
-
       return [item, ...prev].slice(0, 30);
     });
   }, []);
@@ -54,11 +62,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const pushTimedNotification = useCallback(
     (item, duration = 3000) => {
       addOrUpdateNotification(item);
-
       if (notificationTimersRef.current[item.id]) {
         clearTimeout(notificationTimersRef.current[item.id]);
       }
-
       notificationTimersRef.current[item.id] = setTimeout(() => {
         removeNotification(item.id);
         delete notificationTimersRef.current[item.id];
@@ -77,7 +83,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const markPlayerTyping = useCallback(
     (playerId, name) => {
       setTypingPlayers((prev) => ({ ...prev, [playerId]: true }));
-
       addOrUpdateNotification({
         id: `typing-${playerId}`,
         type: 'typing',
@@ -88,7 +93,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
       if (typingTimeoutsRef.current[playerId]) {
         clearTimeout(typingTimeoutsRef.current[playerId]);
       }
-
       if (notificationTimersRef.current[`typing-${playerId}`]) {
         clearTimeout(notificationTimersRef.current[`typing-${playerId}`]);
       }
@@ -99,7 +103,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
           delete next[playerId];
           return next;
         });
-
         removeNotification(`typing-${playerId}`);
         delete typingTimeoutsRef.current[playerId];
       }, 1500);
@@ -113,22 +116,16 @@ export default function GameScreen({ gameData, onGameEnd }) {
       const m = Math.floor(remaining / 60000);
       const s = Math.floor((remaining % 60000) / 1000);
       setTimeLeft(`${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
-
-      if (remaining === 0) {
-        clearInterval(tick);
-      }
+      if (remaining === 0) clearInterval(tick);
     }, 500);
-
     return () => clearInterval(tick);
   }, [gameEndTime]);
 
   useEffect(() => {
     const tick = setInterval(() => {
       const remaining = Math.max(0, gameEndTime - Date.now());
-
       if (remaining <= 60000 && !oneMinuteNotifiedRef.current) {
         oneMinuteNotifiedRef.current = true;
-
         pushPersistentNotification({
           id: 'timer-1-minute',
           type: 'timer',
@@ -137,13 +134,11 @@ export default function GameScreen({ gameData, onGameEnd }) {
         });
       }
     }, 1000);
-
     return () => clearInterval(tick);
   }, [gameEndTime, pushPersistentNotification]);
 
   useEffect(() => {
     if (!frozen || discussionLeft === null) return;
-
     addOrUpdateNotification({
       id: 'discussion-countdown',
       type: 'timer',
@@ -156,45 +151,33 @@ export default function GameScreen({ gameData, onGameEnd }) {
         if (prev <= 1) {
           clearInterval(tick);
           setVotingPhase(true);
-
           addOrUpdateNotification({
             id: 'voting-started',
             type: 'system',
             message: '🗳 Voting has started',
             createdAt: Date.now()
           });
-
           removeNotification('discussion-countdown');
           return 0;
         }
-
         const next = prev - 1;
-
         addOrUpdateNotification({
           id: 'discussion-countdown',
           type: 'timer',
           message: `🗳 Voting starts in ${next}s`,
           createdAt: Date.now()
         });
-
         return next;
       });
     }, 1000);
-
     return () => clearInterval(tick);
   }, [frozen, discussionLeft, addOrUpdateNotification, removeNotification]);
 
   useEffect(() => {
     const handleCodeUpdate = ({ playerId, content }) => {
-      setEditorContent((prev) => {
-        const updated = { ...prev, [playerId]: content };
-        return updated;
-      });
-
+      setEditorContent((prev) => ({ ...prev, [playerId]: content }));
       const player = activePlayers.find((p) => p.id === playerId);
-      if (player) {
-        markPlayerTyping(playerId, player.name);
-      }
+      if (player) markPlayerTyping(playerId, player.name);
     };
 
     const handleFreezeEditor = ({ calledBy, discussionEndTime }) => {
@@ -202,7 +185,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setDiscussionLeft(Math.ceil((discussionEndTime - Date.now()) / 1000));
       setVotingPhase(false);
       setMyVote(null);
-
       pushPersistentNotification({
         id: `emergency-${Date.now()}`,
         type: 'emergency',
@@ -220,10 +202,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setFrozen(false);
       setVotingPhase(false);
       setDiscussionLeft(null);
-
       removeNotification('discussion-countdown');
       removeNotification('voting-started');
-
       pushPersistentNotification({
         id: `vote-${Date.now()}`,
         type: 'system',
@@ -236,34 +216,26 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     const handlePlayerLeft = ({ players: updatedPlayers, leftId }) => {
       const leftPlayer = activePlayers.find((p) => p.id === leftId);
-
       setActivePlayers(updatedPlayers);
-
       if (leftId) {
         setTypingPlayers((prev) => {
           const next = { ...prev };
           delete next[leftId];
           return next;
         });
-
         removeNotification(`typing-${leftId}`);
-
         if (typingTimeoutsRef.current[leftId]) {
           clearTimeout(typingTimeoutsRef.current[leftId]);
           delete typingTimeoutsRef.current[leftId];
         }
       }
-
       if (leftPlayer) {
-        pushTimedNotification(
-          {
-            id: `left-${leftId}-${Date.now()}`,
-            type: 'system',
-            message: `👋 ${leftPlayer.name} left the room`,
-            createdAt: Date.now()
-          },
-          5000
-        );
+        pushTimedNotification({
+          id: `left-${leftId}-${Date.now()}`,
+          type: 'system',
+          message: `👋 ${leftPlayer.name} left the room`,
+          createdAt: Date.now()
+        }, 5000);
       }
     };
 
@@ -271,16 +243,20 @@ export default function GameScreen({ gameData, onGameEnd }) {
       onGameEnd(data);
     };
 
-    const handleRegionUpdated = ({ editorId, targetPlayerId, content }) => {
-      setEditorContent((prev) => ({
-        ...prev,
-        [targetPlayerId]: content
-      }));
+    const handleRegionUpdated = ({ editorId, targetPlayerId, content, version }) => {
+      // 1. Skip if the update is from us (we've already optimistically updated)
+      if (editorId === mySocketId.current) return;
+
+      setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
+      setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
 
       const editorPlayer = activePlayers.find((p) => p.id === editorId);
-      if (editorPlayer) {
-        markPlayerTyping(editorId, editorPlayer.name);
-      }
+      if (editorPlayer) markPlayerTyping(editorId, editorPlayer.name);
+    };
+
+    const handleRegionResync = ({ targetPlayerId, content, version }) => {
+      setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
+      setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
     };
 
     const handleEditRejected = ({ message }) => {
@@ -299,6 +275,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
     socket.on('player_left', handlePlayerLeft);
     socket.on('game_end', handleGameEnd);
     socket.on('region_updated', handleRegionUpdated);
+    socket.on('region_resync', handleRegionResync);
     socket.on('edit_rejected', handleEditRejected);
 
     return () => {
@@ -309,12 +286,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('player_left', handlePlayerLeft);
       socket.off('game_end', handleGameEnd);
       socket.off('region_updated', handleRegionUpdated);
+      socket.off('region_resync', handleRegionResync);
       socket.off('edit_rejected', handleEditRejected);
-
       Object.values(typingTimeoutsRef.current).forEach(clearTimeout);
       Object.values(notificationTimersRef.current).forEach(clearTimeout);
-      typingTimeoutsRef.current = {};
-      notificationTimersRef.current = {};
     };
   }, [
     activePlayers,
@@ -346,11 +321,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     markPlayerTyping(mySocketId.current, playerName);
 
-    socket.emit('region_update', {
-      roomCode,
-      targetPlayerId,
-      content: value
-    });
+    const currentVersion = editorVersions[targetPlayerId] || 0;
+    debouncedEmit(roomCode, targetPlayerId, value, currentVersion);
   }
 
   function handleEmergency() {
@@ -378,12 +350,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
     <div className="min-h-screen flex flex-col bg-gray-950" style={{ height: '100vh' }}>
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         <span className="text-green-500 font-display tracking-widest text-lg">CODE SPY</span>
-
         <div className="flex items-center gap-4">
           <span className="text-gray-600 font-mono text-xs">{roomCode}</span>
           <span className={`font-display text-2xl ${timerColor}`}>⏱ {timeLeft}</span>
         </div>
-
         <span
           className={`font-mono text-xs px-2 py-1 rounded ${
             isSpy
@@ -400,12 +370,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
           <div className="px-3 py-2 border-b border-gray-800">
             <p className="text-gray-600 font-mono text-xs tracking-widest">PLAYERS</p>
           </div>
-
           <div className="max-h-64 overflow-y-auto p-2 space-y-2">
             {activePlayers.map((p) => {
               const isMe = p.id === mySocketId.current;
               const isTyping = !!typingPlayers[p.id];
-
               return (
                 <div
                   key={p.id}
@@ -417,26 +385,18 @@ export default function GameScreen({ gameData, onGameEnd }) {
                     <span className={`text-xs ${isMe ? 'text-green-400' : 'text-gray-400'}`}>
                       {isTyping ? '✍️' : '●'}
                     </span>
-
-                    <span
-                      className={`font-mono text-xs truncate ${
-                        isMe ? 'text-green-300' : 'text-gray-300'
-                      }`}
-                    >
+                    <span className={`font-mono text-xs truncate ${isMe ? 'text-green-300' : 'text-gray-300'}`}>
                       {p.name}
                     </span>
                   </div>
-
                   {isMe && <div className="text-green-700 font-mono text-xs mt-1">you</div>}
                 </div>
               );
             })}
           </div>
-
           <div className="flex-1 min-h-0">
             <NotificationFeed items={notifications} />
           </div>
-
           <div className="p-2 border-t border-gray-800">
             <button
               onClick={handleEmergency}
@@ -455,19 +415,14 @@ export default function GameScreen({ gameData, onGameEnd }) {
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {activePlayers.map((p) => {
             const editable = !frozen && (isSpy || p.id === mySocketId.current);
-            const locked = !editable;
-
             return (
               <RegionEditor
                 key={p.id}
                 title={`${p.name}'s region`}
-                value={
-                  editorContent[p.id] ||
-                  `// ===== ${p.name}'s region =====\n// Write your code here\n`
-                }
+                value={editorContent[p.id] || `// ===== ${p.name}'s region =====\n// Write your code here\n`}
                 language={language}
                 editable={editable}
-                locked={locked}
+                locked={!editable}
                 onChange={(value) => handleRegionChange(p.id, value)}
               />
             );
@@ -478,68 +433,50 @@ export default function GameScreen({ gameData, onGameEnd }) {
           <div className="px-3 py-2 border-b border-gray-800">
             <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
           </div>
-
           <div className="flex-1 overflow-y-auto p-3">
             {isSpy ? (
               <div className="space-y-3">
                 <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
-
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                   <p className="text-red-300 font-mono text-xs">{taskCard?.method}</p>
                 </div>
-
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">SABOTAGE</p>
-                  <p className="text-red-200 font-mono text-xs leading-relaxed">
-                    {taskCard?.sabotage}
-                  </p>
+                  <p className="text-red-200 font-mono text-xs leading-relaxed">{taskCard?.sabotage}</p>
                 </div>
-
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">COVER</p>
-                  <p className="text-orange-300 font-mono text-xs leading-relaxed">
-                    {taskCard?.cover}
-                  </p>
+                  <p className="text-orange-300 font-mono text-xs leading-relaxed">{taskCard?.cover}</p>
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
                 <div className="text-green-400 font-mono text-xs font-bold">🟢 TASK — CODER</div>
-
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                   <p className="text-green-300 font-mono text-xs">{taskCard?.method}</p>
                 </div>
-
                 <div>
                   <p className="text-gray-500 font-mono text-xs mb-1">RULES</p>
                   <ul className="space-y-1">
                     {(taskCard?.rules || []).map((r, i) => (
-                      <li key={i} className="text-gray-300 font-mono text-xs leading-relaxed">
-                        · {r}
-                      </li>
+                      <li key={i} className="text-gray-300 font-mono text-xs leading-relaxed">· {r}</li>
                     ))}
                   </ul>
                 </div>
-
                 {taskCard?.hint && (
                   <div>
                     <p className="text-gray-500 font-mono text-xs mb-1">HINT</p>
-                    <p className="text-yellow-600 font-mono text-xs leading-relaxed">
-                      {taskCard.hint}
-                    </p>
+                    <p className="text-yellow-600 font-mono text-xs leading-relaxed">{taskCard.hint}</p>
                   </div>
                 )}
               </div>
             )}
-
             <div className="mt-4 pt-4 border-t border-gray-800">
               <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">TEST CASES</p>
               {(scenario?.tests || []).map((t, i) => (
-                <div key={i} className="text-gray-600 font-mono text-xs mb-1">
-                  ◻ {t.desc}
-                </div>
+                <div key={i} className="text-gray-600 font-mono text-xs mb-1">◻ {t.desc}</div>
               ))}
             </div>
           </div>
@@ -549,18 +486,13 @@ export default function GameScreen({ gameData, onGameEnd }) {
       {votingPhase && (
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-red-800 rounded-lg p-6 w-full max-w-sm">
-            <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">
-              VOTE
-            </h2>
-
+            <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">VOTE</h2>
             <p className="text-gray-500 font-mono text-xs text-center mb-4">
               Who is the Spy? ({votes.in}/{votes.total} votes cast)
             </p>
-
             <div className="space-y-2 mb-4">
               {activePlayers.map((p) => {
                 const isMe = p.id === mySocketId.current;
-
                 return (
                   <button
                     key={p.id}
@@ -578,7 +510,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
                   </button>
                 );
               })}
-
               <button
                 onClick={() => castVote('skip')}
                 disabled={!!myVote}
@@ -591,12 +522,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
                 Skip (don't eject anyone)
               </button>
             </div>
-
-            {myVote && (
-              <p className="text-green-600 font-mono text-xs text-center">
-                ✓ Vote cast. Waiting for others...
-              </p>
-            )}
+            {myVote && <p className="text-green-600 font-mono text-xs text-center">✓ Vote cast. Waiting for others...</p>}
           </div>
         </div>
       )}
