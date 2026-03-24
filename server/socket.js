@@ -11,10 +11,20 @@ function generateRoomCode() {
   return code;
 }
 
+function canEditRegion(room, editorSocketId, targetPlayerId) {
+  if (!room || room.state !== 'playing') return false;
+  if (!room.players.some((p) => p.id === editorSocketId)) return false;
+  if (!room.players.some((p) => p.id === targetPlayerId)) return false;
+
+  const isSpy = room.spyId === editorSocketId;
+  if (isSpy) return true;
+
+  return editorSocketId === targetPlayerId;
+}
+
 function handleConnection(socket, io) {
   console.log(`🔌 Connected: ${socket.id}`);
 
-  // ── CREATE ROOM ──────────────────────────────────────────────
   socket.on('create_room', ({ playerName }) => {
     const roomCode = generateRoomCode();
     const room = createRoom(roomCode, socket.id, playerName);
@@ -27,7 +37,6 @@ function handleConnection(socket, io) {
     console.log(`🏠 Room ${roomCode} created by ${playerName}`);
   });
 
-  // ── JOIN ROOM ─────────────────────────────────────────────────
   socket.on('join_room', ({ roomCode, playerName }) => {
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', { message: 'Room not found.' });
@@ -47,7 +56,6 @@ function handleConnection(socket, io) {
     console.log(`👤 ${playerName} joined room ${roomCode}`);
   });
 
-  // ── HOST SETTINGS ─────────────────────────────────────────────
   socket.on('update_settings', ({ roomCode, language, scenario, timerMinutes }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
@@ -57,7 +65,6 @@ function handleConnection(socket, io) {
     io.to(roomCode).emit('settings_updated', { language: room.language, scenario: room.scenario, timerMinutes: room.timerMinutes });
   });
 
-  // ── START GAME ────────────────────────────────────────────────
   socket.on('start_game', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
@@ -65,11 +72,9 @@ function handleConnection(socket, io) {
 
     const scenario = getScenario(room.scenario);
 
-    // Assign spy randomly
     const spyIndex = Math.floor(Math.random() * room.players.length);
     room.spyId = room.players[spyIndex].id;
 
-    // Assign roles and task cards
     let coderTaskIndex = 0;
     room.players.forEach((p) => {
       if (p.id === room.spyId) {
@@ -83,7 +88,6 @@ function handleConnection(socket, io) {
       room.emergencyCalls[p.id] = 0;
     });
 
-    // Initialize editor regions
     room.players.forEach((p) => {
       room.editorContent[p.id] = `// ===== ${p.name}'s region =====\n// Write your code here\n`;
     });
@@ -91,7 +95,6 @@ function handleConnection(socket, io) {
     room.state = 'playing';
     room.gameEndTime = Date.now() + room.timerMinutes * 60 * 1000;
 
-    // Send each player their private info
     room.players.forEach((p) => {
       const playerSocket = io.sockets.sockets.get(p.id);
       if (!playerSocket) return;
@@ -109,7 +112,6 @@ function handleConnection(socket, io) {
 
     console.log(`🎮 Game started in room ${roomCode}. Spy: ${room.players.find(p => p.id === room.spyId)?.name}`);
 
-    // Auto-end when timer expires
     setTimeout(() => {
       const r = getRoom(roomCode);
       if (r && r.state === 'playing') {
@@ -118,15 +120,27 @@ function handleConnection(socket, io) {
     }, room.timerMinutes * 60 * 1000);
   });
 
-  // ── CODE DELTA ────────────────────────────────────────────────
-  socket.on('code_delta', ({ roomCode, content }) => {
+  socket.on('region_update', ({ roomCode, targetPlayerId, content }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
-    room.editorContent[socket.id] = content;
-    socket.to(roomCode).emit('code_update', { playerId: socket.id, content });
+
+    if (!canEditRegion(room, socket.id, targetPlayerId)) {
+      return socket.emit('edit_rejected', {
+        targetPlayerId,
+        message: 'You cannot edit this region.'
+      });
+    }
+
+    room.editorContent[targetPlayerId] = content;
+
+    io.to(roomCode).emit('region_updated', {
+      editorId: socket.id,
+      targetPlayerId,
+      content,
+      updatedAt: Date.now()
+    });
   });
 
-  // ── EMERGENCY CALL ────────────────────────────────────────────
   socket.on('emergency_call', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
@@ -148,7 +162,6 @@ function handleConnection(socket, io) {
     console.log(`🚨 Emergency call in ${roomCode} by ${caller?.name}`);
   });
 
-  // ── CAST VOTE ─────────────────────────────────────────────────
   socket.on('cast_vote', ({ roomCode, votedFor }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'voting') return;
@@ -164,10 +177,8 @@ function handleConnection(socket, io) {
     }
   });
 
-  // ── DISCONNECT ────────────────────────────────────────────────
   socket.on('disconnect', () => {
     console.log(`❌ Disconnected: ${socket.id}`);
-    // Find room this player was in
     for (const [code, room] of require('./gameState').rooms) {
       const idx = room.players.findIndex(p => p.id === socket.id);
       if (idx !== -1) {
@@ -190,7 +201,6 @@ function resolveVote(room, roomCode, io) {
     else voteCounts['skip']++;
   });
 
-  // Find the player with most votes
   let maxVotes = 0;
   let ejected = null;
   let tied = false;
@@ -202,7 +212,7 @@ function resolveVote(room, roomCode, io) {
   });
 
   const skipCount = voteCounts['skip'] || 0;
-  if (tied || skipCount >= maxVotes) ejected = null; // tie or skip wins
+  if (tied || skipCount >= maxVotes) ejected = null;
 
   if (ejected) {
     const ejectedPlayer = room.players.find(p => p.id === ejected);
@@ -210,10 +220,8 @@ function resolveVote(room, roomCode, io) {
     room.players = room.players.filter(p => p.id !== ejected);
 
     if (wasTheSpy) {
-      // Coders win
       endGame(room, roomCode, io, 'coders', `${ejectedPlayer?.name} was the Spy! Coders win!`);
     } else {
-      // Resume game, spy still in
       room.state = 'playing';
       io.to(roomCode).emit('vote_result', {
         ejected: ejectedPlayer?.name,
@@ -222,7 +230,6 @@ function resolveVote(room, roomCode, io) {
       });
     }
   } else {
-    // No ejection — resume
     room.state = 'playing';
     io.to(roomCode).emit('vote_result', { ejected: null, players: room.players });
   }
@@ -234,7 +241,7 @@ function endGame(room, roomCode, io, winner, message) {
     { name: 'Unknown', id: room.spyId };
 
   io.to(roomCode).emit('game_end', {
-    winner,         // 'coders' | 'spy'
+    winner,
     message,
     spyName: spyPlayer.name,
     spyTask: room.taskCards[room.spyId],

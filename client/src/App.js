@@ -4,7 +4,7 @@ import GameScreen from './screens/GameScreen';
 import EndScreen from './screens/EndScreen';
 
 export default function App() {
-  const [screen, setScreen] = useState('lobby'); // lobby | game | end
+  const [screen, setScreen] = useState('lobby');
   const [gameData, setGameData] = useState(null);
   const [endData, setEndData] = useState(null);
 

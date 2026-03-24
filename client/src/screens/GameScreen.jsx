@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import Editor from '@monaco-editor/react';
 import socket from '../utils/socket';
 import NotificationFeed from './NotificationFeed';
+import RegionEditor from './RegionEditor';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
@@ -299,12 +299,35 @@ export default function GameScreen({ gameData, onGameEnd }) {
       onGameEnd(data);
     };
 
+    const handleRegionUpdated = ({ editorId, targetPlayerId, content }) => {
+      setEditorContent((prev) => ({
+        ...prev,
+        [targetPlayerId]: content
+      }));
+
+      const editorPlayer = activePlayers.find((p) => p.id === editorId);
+      if (editorPlayer) {
+        markPlayerTyping(editorId, editorPlayer.name);
+      }
+    };
+
+    const handleEditRejected = ({ message }) => {
+      pushTimedNotification({
+        id: `reject-${Date.now()}`,
+        type: 'warning',
+        message: `🔒 ${message}`,
+        createdAt: Date.now()
+      }, 2500);
+    };
+
     socket.on('code_update', handleCodeUpdate);
     socket.on('freeze_editor', handleFreezeEditor);
     socket.on('vote_update', handleVoteUpdate);
     socket.on('vote_result', handleVoteResult);
     socket.on('player_left', handlePlayerLeft);
     socket.on('game_end', handleGameEnd);
+    socket.on('region_updated', handleRegionUpdated);
+    socket.on('edit_rejected', handleEditRejected);
 
     return () => {
       socket.off('code_update', handleCodeUpdate);
@@ -313,6 +336,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('vote_result', handleVoteResult);
       socket.off('player_left', handlePlayerLeft);
       socket.off('game_end', handleGameEnd);
+      socket.off('region_updated', handleRegionUpdated);
+      socket.off('edit_rejected', handleEditRejected);
 
       Object.values(typingTimeoutsRef.current).forEach(clearTimeout);
       Object.values(notificationTimersRef.current).forEach(clearTimeout);
@@ -329,65 +354,32 @@ export default function GameScreen({ gameData, onGameEnd }) {
     removeNotification
   ]);
 
-  function handleEditorMount(editor, monaco) {
-    editorRef.current = editor;
-    monacoRef.current = monaco;
-
-    monaco.editor.defineTheme('spy-dark', {
-      base: 'vs-dark',
-      inherit: true,
-      rules: [
-        { token: 'comment', foreground: '4a7c59' },
-        { token: 'keyword', foreground: '66d9e8' },
-        { token: 'string', foreground: 'a8d8a8' },
-        { token: 'number', foreground: 'f8a95a' }
-      ],
-      colors: {
-        'editor.background': '#060b14',
-        'editor.foreground': '#c9e8c9',
-        'editor.lineHighlightBackground': '#0d1f2d',
-        'editorLineNumber.foreground': '#2a4a3a',
-        'editorCursor.foreground': '#00ff88',
-        'editor.selectionBackground': '#1a3a2a'
-      }
-    });
-
-    monaco.editor.setTheme('spy-dark');
-  }
-
-  function handleEditorChange(value = '') {
+  function handleRegionChange(targetPlayerId, value = '') {
     if (frozen) return;
 
-    setFullCode(value);
-
-    const lines = value.split('\n');
-    const myMarker = `// ===== ${playerName}`;
-    let inMine = false;
-    const myLines = [];
-
-    for (const line of lines) {
-      if (line.includes(myMarker)) {
-        inMine = true;
-        myLines.push(line);
-        continue;
-      }
-
-      if (inMine && line.startsWith('// =====') && !line.includes(myMarker)) {
-        break;
-      }
-
-      if (inMine) {
-        myLines.push(line);
-      }
+    const canEdit = isSpy || targetPlayerId === mySocketId.current;
+    if (!canEdit) {
+      pushTimedNotification({
+        id: `forbidden-${Date.now()}`,
+        type: 'warning',
+        message: '🔒 You cannot edit this region',
+        createdAt: Date.now()
+      }, 2000);
+      return;
     }
 
-    const myContent = myLines.join('\n');
-
-    setEditorContent((prev) => ({ ...prev, [mySocketId.current]: myContent }));
+    setEditorContent((prev) => ({
+      ...prev,
+      [targetPlayerId]: value
+    }));
 
     markPlayerTyping(mySocketId.current, playerName);
 
-    socket.emit('code_delta', { roomCode, content: myContent });
+    socket.emit('region_update', {
+      roomCode,
+      targetPlayerId,
+      content: value
+    });
   }
 
   function handleEmergency() {
@@ -489,29 +481,26 @@ export default function GameScreen({ gameData, onGameEnd }) {
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-hidden">
-            <Editor
-              height="100%"
-              language={language}
-              value={fullCode}
-              onChange={handleEditorChange}
-              onMount={handleEditorMount}
-              options={{
-                fontSize: 13,
-                fontFamily: '"JetBrains Mono", monospace',
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                wordWrap: 'on',
-                lineNumbers: 'on',
-                renderLineHighlight: 'line',
-                readOnly: frozen,
-                cursorBlinking: 'smooth',
-                smoothScrolling: true,
-                contextmenu: false
-              }}
-            />
-          </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {activePlayers.map((p) => {
+            const editable = !frozen && (isSpy || p.id === mySocketId.current);
+            const locked = !editable;
+
+            return (
+              <RegionEditor
+                key={p.id}
+                title={`${p.name}'s region`}
+                value={
+                  editorContent[p.id] ||
+                  `// ===== ${p.name}'s region =====\n// Write your code here\n`
+                }
+                language={language}
+                editable={editable}
+                locked={locked}
+                onChange={(value) => handleRegionChange(p.id, value)}
+              />
+            );
+          })}
         </div>
 
         <div className="w-56 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
