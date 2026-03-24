@@ -31,36 +31,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const typingTimeoutsRef = useRef({});
   const notificationTimersRef = useRef({});
   const oneMinuteNotifiedRef = useRef(false);
-
-  const editorRef = useRef(null);
-  const monacoRef = useRef(null);
   const mySocketId = useRef(socket.id);
 
-  const language = skeleton?.includes('public class')
-    ? 'java'
-    : skeleton?.includes('def ')
-    ? 'python'
-    : 'csharp';
-
-  const buildFullCode = useCallback(
-    (contents) => {
-      return activePlayers
-        .map((p) => {
-          const region =
-            contents[p.id] ||
-            `// ===== ${p.name}'s region =====\n// Write your code here\n`;
-          return region;
-        })
-        .join('\n\n');
-    },
-    [activePlayers]
-  );
-
-  const [fullCode, setFullCode] = useState(() => buildFullCode(initialContent || {}));
-
-  useEffect(() => {
-    setFullCode(buildFullCode(editorContent));
-  }, [activePlayers, buildFullCode, editorContent]);
+  const language = skeleton?.includes('public class') ? 'java' : skeleton?.includes('def ') ? 'python' : 'csharp';
 
   const addOrUpdateNotification = useCallback((item) => {
     setNotifications((prev) => {
@@ -215,7 +188,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
     const handleCodeUpdate = ({ playerId, content }) => {
       setEditorContent((prev) => {
         const updated = { ...prev, [playerId]: content };
-        setFullCode(buildFullCode(updated));
         return updated;
       });
 
@@ -347,7 +319,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
   }, [
     activePlayers,
     onGameEnd,
-    buildFullCode,
     markPlayerTyping,
     pushTimedNotification,
     pushPersistentNotification,
