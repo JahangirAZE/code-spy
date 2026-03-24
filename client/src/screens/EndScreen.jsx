@@ -94,7 +94,7 @@ export default function EndScreen({ endData, onPlayAgain }) {
           <div className={`font-display text-5xl tracking-widest mb-3 ${
             codersWin ? 'text-green-400' : 'text-red-400'
           }`}>
-            {codersWin ? '✅ CODERS WIN' : '🔴 SPY WINS'}
+            {codersWin ? 'CODERS WIN' : 'SPY WINS'}
           </div>
           <p className="text-gray-300 font-mono text-sm">{message}</p>
         </div>
