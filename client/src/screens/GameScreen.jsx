@@ -19,7 +19,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [editorContent, setEditorContent] = useState(initialContent || {});
   const [timeLeft, setTimeLeft] = useState('');
   const [frozen, setFrozen] = useState(false);
-  const [frozenMsg, setFrozenMsg] = useState('');
   const [discussionLeft, setDiscussionLeft] = useState(null);
   const [votingPhase, setVotingPhase] = useState(false);
   const [votes, setVotes] = useState({ in: 0, total: players.length });
@@ -228,7 +227,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     const handleFreezeEditor = ({ calledBy, discussionEndTime }) => {
       setFrozen(true);
-      setFrozenMsg('');
       setDiscussionLeft(Math.ceil((discussionEndTime - Date.now()) / 1000));
       setVotingPhase(false);
       setMyVote(null);
@@ -249,7 +247,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setActivePlayers(updatedPlayers);
       setFrozen(false);
       setVotingPhase(false);
-      setFrozenMsg('');
       setDiscussionLeft(null);
 
       removeNotification('discussion-countdown');
@@ -328,6 +325,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
     buildFullCode,
     markPlayerTyping,
     pushTimedNotification,
+    pushPersistentNotification,
     removeNotification
   ]);
 
