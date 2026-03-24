@@ -1,17 +1,73 @@
 import React, { useEffect, useState } from 'react';
 
 export default function EndScreen({ endData, onPlayAgain }) {
-  const { winner, message, spyName, spyTask, finalCode, players } = endData;
+  const {
+    winner,
+    message,
+    spyName,
+    spyTask,
+    finalCode,
+    players,
+    eliminatedPlayers = []
+  } = endData;
+
   const [revealed, setRevealed] = useState(false);
   const [showCode, setShowCode] = useState(false);
 
   const codersWin = winner === 'coders';
 
-  // Dramatic reveal after 1 second
+  const allParticipants = [
+    ...players.map((p) => ({ ...p, status: p.name === spyName ? 'spy' : 'survivor' })),
+    ...eliminatedPlayers.map((p) => ({
+      ...p,
+      status: p.name === spyName ? 'spy-eliminated' : 'eliminated'
+    }))
+  ];
+
   useEffect(() => {
     const t = setTimeout(() => setRevealed(true), 1000);
     return () => clearTimeout(t);
   }, []);
+
+  function PlayerBadge({ status }) {
+    switch (status) {
+      case 'spy':
+        return <span className="ml-auto font-mono text-xs text-red-500">SPY</span>;
+      case 'spy-eliminated':
+        return <span className="ml-auto font-mono text-xs text-red-700">SPY · EJECTED</span>;
+      case 'eliminated':
+        return <span className="ml-auto font-mono text-xs text-gray-600">EJECTED</span>;
+      default:
+        return <span className="ml-auto font-mono text-xs text-green-700">CODER</span>;
+    }
+  }
+
+  function rowStyle(status) {
+    switch (status) {
+      case 'spy':
+        return 'bg-red-950 border border-red-900';
+      case 'spy-eliminated':
+        return 'bg-red-950 border border-red-900 opacity-70';
+      case 'eliminated':
+        return 'bg-gray-900 border border-gray-800 opacity-50';
+      default:
+        return 'bg-gray-900 border border-gray-800';
+    }
+  }
+
+  function rowIcon(status) {
+    switch (status) {
+      case 'spy':
+      case 'spy-eliminated':
+        return '🔴';
+      case 'eliminated':
+        return '💀';
+      default:
+        return '🟢';
+    }
+  }
+
+  const allPlayers = [...players, ...eliminatedPlayers];
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 relative overflow-hidden">
@@ -73,28 +129,35 @@ export default function EndScreen({ endData, onPlayAgain }) {
           </div>
         </div>
 
-        {/* ── PLAYERS SUMMARY ── */}
+        {/* ── PLAYERS SUMMARY — now includes eliminated ── */}
         <div className="border border-gray-700 rounded-lg overflow-hidden">
-          <div className="bg-gray-900 px-4 py-2 border-b border-gray-700">
-            <p className="text-gray-500 font-mono text-xs tracking-widest">PLAYERS</p>
+          <div className="bg-gray-900 px-4 py-2 border-b border-gray-700 flex items-center justify-between">
+            <p className="text-gray-500 font-mono text-xs tracking-widest">ALL PLAYERS</p>
+            {eliminatedPlayers.length > 0 && (
+              <p className="text-gray-700 font-mono text-xs">
+                {eliminatedPlayers.length} ejected
+              </p>
+            )}
           </div>
           <div className="p-3 space-y-2">
-            {players.map(p => {
-              const isSpy = p.name === spyName;
-              return (
-                <div key={p.id} className={`flex items-center gap-3 rounded p-2 ${
-                  isSpy ? 'bg-red-950 border border-red-900' : 'bg-gray-900 border border-gray-800'
+            {allParticipants.map((p) => (
+              <div
+                key={p.id}
+                className={`flex items-center gap-3 rounded p-2 ${rowStyle(p.status)}`}
+              >
+                <span>{rowIcon(p.status)}</span>
+                <span className={`font-mono text-sm ${
+                  p.status === 'spy' || p.status === 'spy-eliminated'
+                    ? 'text-red-300'
+                    : p.status === 'eliminated'
+                    ? 'text-gray-600 line-through'
+                    : 'text-gray-300'
                 }`}>
-                  <span>{isSpy ? '🔴' : '🟢'}</span>
-                  <span className={`font-mono text-sm ${isSpy ? 'text-red-300' : 'text-gray-300'}`}>
-                    {p.name}
-                  </span>
-                  <span className={`ml-auto font-mono text-xs ${isSpy ? 'text-red-500' : 'text-green-700'}`}>
-                    {isSpy ? 'SPY' : 'CODER'}
-                  </span>
-                </div>
-              );
-            })}
+                  {p.name}
+                </span>
+                <PlayerBadge status={p.status} />
+              </div>
+            ))}
           </div>
         </div>
 
@@ -110,10 +173,12 @@ export default function EndScreen({ endData, onPlayAgain }) {
           {showCode && (
             <div className="overflow-x-auto">
               <pre className="p-4 text-green-300 font-mono text-xs leading-relaxed bg-gray-950 max-h-64 overflow-y-auto">
+                {/* ← NEW: include eliminated players' code regions too */}
                 {finalCode
                   ? Object.entries(finalCode).map(([id, code]) => {
-                      const player = players.find(p => p.id === id);
-                      return `// ===== ${player?.name || id} =====\n${code}`;
+                      const player = allPlayers.find(p => p.id === id);
+                      const isElim = eliminatedPlayers.some(p => p.id === id);
+                      return `// ===== ${player?.name || id}${isElim ? ' [EJECTED]' : ''} =====\n${code}`;
                     }).join('\n\n')
                   : '// No code submitted'
                 }

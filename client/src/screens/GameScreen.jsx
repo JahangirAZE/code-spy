@@ -14,7 +14,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
     gameEndTime,
     isSpy,
     roomCode,
-    playerName
+    playerName,
+    eliminatedPlayers: initialEliminated = []
   } = gameData;
 
   const [editorContent, setEditorContent] = useState(initialContent || {});
@@ -27,6 +28,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [myVote, setMyVote] = useState(null);
   const [emergencyUsed, setEmergencyUsed] = useState(false);
   const [activePlayers, setActivePlayers] = useState(players || []);
+  const [eliminatedPlayers, setEliminatedPlayers] = useState(initialEliminated);
   const [typingPlayers, setTypingPlayers] = useState({});
   const [notifications, setNotifications] = useState([]);
 
@@ -34,7 +36,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const notificationTimersRef = useRef({});
   const oneMinuteNotifiedRef = useRef(false);
   const mySocketId = useRef(socket.id);
-  const editorVersionsRef = useRef(socket.id);
+  const editorVersionsRef = useRef({});
+
+  const amEliminated = eliminatedPlayers.some((p) => p.id === mySocketId.current);
 
   const language = skeleton?.includes('public class') ? 'java' : skeleton?.includes('def ') ? 'python' : 'csharp';
 
@@ -87,6 +91,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const markPlayerTyping = useCallback(
     (playerId, name) => {
+      const isElim = eliminatedPlayers.some((p) => p.id === playerId);
+      if (isElim) return;
+
       setTypingPlayers((prev) => ({ ...prev, [playerId]: true }));
       addOrUpdateNotification({
         id: `typing-${playerId}`,
@@ -112,7 +119,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
         delete typingTimeoutsRef.current[playerId];
       }, 1500);
     },
-    [addOrUpdateNotification, removeNotification]
+    [addOrUpdateNotification, removeNotification, eliminatedPlayers]
   );
 
   useEffect(() => {
@@ -180,6 +187,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   useEffect(() => {
     const handleCodeUpdate = ({ playerId, content }) => {
+      const isElim = eliminatedPlayers.some((p) => p.id === playerId);
+      if (isElim) return;
+
       setEditorContent((prev) => ({ ...prev, [playerId]: content }));
       const player = activePlayers.find((p) => p.id === playerId);
       if (player) markPlayerTyping(playerId, player.name);
@@ -202,7 +212,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setVotes({ in: votesIn, total: totalPlayers });
     };
 
-    const handleVoteResult = ({ ejected, wasTheSpy, players: updatedPlayers }) => {
+    const handleVoteResult = ({ ejected, ejectedId, wasTheSpy, players: updatedPlayers, eliminatedPlayers: updatedEliminated }) => {
+      if (updatedEliminated) setEliminatedPlayers(updatedEliminated);
+
       setActivePlayers(updatedPlayers);
       setFrozen(false);
       setVotingPhase(false);
@@ -217,6 +229,15 @@ export default function GameScreen({ gameData, onGameEnd }) {
           : '⚖️ No one was ejected. Game resumes.',
         createdAt: Date.now()
       });
+
+      if (ejectedId && ejectedId === mySocketId.current) {
+        pushPersistentNotification({
+          id: 'you-eliminated',
+          type: 'warning',
+          message: '💀 You were eliminated!',
+          createdAt: Date.now()
+        });
+      }
     };
 
     const handlePlayerLeft = ({ players: updatedPlayers, leftId }) => {
@@ -251,6 +272,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
     const handleRegionUpdated = ({ editorId, targetPlayerId, content, version }) => {
       if (editorId === mySocketId.current) return;
       if (targetPlayerId === mySocketId.current) return;
+
+      const isElim = eliminatedPlayers.some((p) => p.id === editorId);
+      if (isElim) return;
+
       setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
       setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
       editorVersionsRef.current[targetPlayerId] = version;
@@ -301,6 +326,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
     };
   }, [
     activePlayers,
+    eliminatedPlayers,
     onGameEnd,
     markPlayerTyping,
     pushTimedNotification,
@@ -310,7 +336,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
   ]);
 
   function handleRegionChange(targetPlayerId, value = '') {
+    if (amEliminated) return;
     if (frozen) return;
+
     const canEdit = targetPlayerId === mySocketId.current;
     if (!canEdit) {
       pushTimedNotification({
@@ -332,13 +360,13 @@ export default function GameScreen({ gameData, onGameEnd }) {
   }
 
   function handleEmergency() {
-    if (emergencyUsed || frozen) return;
+    if (amEliminated || emergencyUsed || frozen) return;
     setEmergencyUsed(true);
     socket.emit('emergency_call', { roomCode });
   }
 
   function castVote(targetId) {
-    if (myVote) return;
+    if (amEliminated || myVote) return;
     setMyVote(targetId);
     socket.emit('cast_vote', { roomCode, votedFor: targetId });
   }
@@ -352,6 +380,11 @@ export default function GameScreen({ gameData, onGameEnd }) {
       ? 'text-yellow-400'
       : 'text-green-400';
 
+  const allPlayersForSidebar = [
+    ...activePlayers,
+    ...eliminatedPlayers.map((p) => ({ ...p, eliminated: true }))
+  ];
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-950" style={{ height: '100vh' }}>
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
@@ -360,15 +393,23 @@ export default function GameScreen({ gameData, onGameEnd }) {
           <span className="text-gray-600 font-mono text-xs">{roomCode}</span>
           <span className={`font-display text-2xl ${timerColor}`}>⏱ {timeLeft}</span>
         </div>
-        <span
-          className={`font-mono text-xs px-2 py-1 rounded ${
-            isSpy
-              ? 'bg-red-950 text-red-400 border border-red-800'
-              : 'bg-green-950 text-green-400 border border-green-800'
-          }`}
-        >
-          {isSpy ? '🔴 SPY' : '🟢 CODER'}
-        </span>
+        <div className="flex items-center gap-2">
+          {/* ← NEW: eliminated banner in header */}
+          {amEliminated && (
+            <span className="font-mono text-xs px-2 py-1 rounded bg-gray-800 text-gray-500 border border-gray-700">
+              💀 ELIMINATED
+            </span>
+          )}
+          <span
+            className={`font-mono text-xs px-2 py-1 rounded ${
+              isSpy
+                ? 'bg-red-950 text-red-400 border border-red-800'
+                : 'bg-green-950 text-green-400 border border-green-800'
+            }`}
+          >
+            {isSpy ? '🔴 SPY' : '🟢 CODER'}
+          </span>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -377,25 +418,46 @@ export default function GameScreen({ gameData, onGameEnd }) {
             <p className="text-gray-600 font-mono text-xs tracking-widest">PLAYERS</p>
           </div>
           <div className="max-h-64 overflow-y-auto p-2 space-y-2">
-            {activePlayers.map((p) => {
+            {/* ← NEW: render active + eliminated players together */}
+            {allPlayersForSidebar.map((p) => {
               const isMe = p.id === mySocketId.current;
               const isTyping = !!typingPlayers[p.id];
+              const isElim = !!p.eliminated;
               return (
                 <div
                   key={p.id}
                   className={`rounded p-2 border ${
-                    isMe ? 'border-green-800 bg-green-950' : 'border-gray-800 bg-gray-900'
+                    isElim
+                      ? 'border-gray-800 bg-gray-900 opacity-50'
+                      : isMe
+                      ? 'border-green-800 bg-green-950'
+                      : 'border-gray-800 bg-gray-900'
                   }`}
                 >
                   <div className="flex items-center gap-1">
-                    <span className={`text-xs ${isMe ? 'text-green-400' : 'text-gray-400'}`}>
-                      {isTyping ? '✍️' : '●'}
+                    <span className={`text-xs ${isElim ? 'text-gray-600' : isMe ? 'text-green-400' : 'text-gray-400'}`}>
+                      {isElim ? '💀' : isTyping ? '✍️' : '●'}
                     </span>
-                    <span className={`font-mono text-xs truncate ${isMe ? 'text-green-300' : 'text-gray-300'}`}>
+                    <span
+                      className={`font-mono text-xs truncate ${
+                        isElim
+                          ? 'text-gray-600 line-through'
+                          : isMe
+                          ? 'text-green-300'
+                          : 'text-gray-300'
+                      }`}
+                    >
                       {p.name}
                     </span>
                   </div>
-                  {isMe && <div className="text-green-700 font-mono text-xs mt-1">you</div>}
+                  {isMe && !isElim && <div className="text-green-700 font-mono text-xs mt-1">you</div>}
+                  {/* ← NEW: show eliminated label to the eliminated player themselves */}
+                  {isMe && isElim && (
+                    <div className="text-gray-600 font-mono text-xs mt-1">you · eliminated</div>
+                  )}
+                  {isElim && !isMe && (
+                    <div className="text-gray-700 font-mono text-xs mt-1">eliminated</div>
+                  )}
                 </div>
               );
             })}
@@ -406,21 +468,21 @@ export default function GameScreen({ gameData, onGameEnd }) {
           <div className="p-2 border-t border-gray-800">
             <button
               onClick={handleEmergency}
-              disabled={emergencyUsed || frozen}
+              disabled={amEliminated || emergencyUsed || frozen}
               className={`w-full py-2 rounded font-mono text-xs font-bold transition-colors ${
-                emergencyUsed || frozen
+                amEliminated || emergencyUsed || frozen
                   ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
                   : 'bg-red-900 hover:bg-red-700 text-red-300 border border-red-800'
               }`}
             >
-              {emergencyUsed ? '🚨 USED' : '🚨 EMERGENCY'}
+              {emergencyUsed ? '🚨 USED' : amEliminated ? '🚨 N/A' : '🚨 EMERGENCY'}
             </button>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {activePlayers.map((p) => {
-            const editable = !frozen && p.id === mySocketId.current;
+            const editable = !frozen && !amEliminated && p.id === mySocketId.current;
             return (
               <RegionEditor
                 key={p.id}
@@ -440,7 +502,15 @@ export default function GameScreen({ gameData, onGameEnd }) {
             <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
-            {isSpy ? (
+            {/* ← NEW: show eliminated overlay over task card */}
+            {amEliminated ? (
+              <div className="space-y-3">
+                <div className="text-gray-600 font-mono text-xs font-bold">💀 ELIMINATED</div>
+                <p className="text-gray-700 font-mono text-xs leading-relaxed">
+                  You've been ejected from the game. Watch the remaining players and see how it ends.
+                </p>
+              </div>
+            ) : isSpy ? (
               <div className="space-y-3">
                 <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
                 <div>
@@ -493,42 +563,51 @@ export default function GameScreen({ gameData, onGameEnd }) {
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-red-800 rounded-lg p-6 w-full max-w-sm">
             <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">VOTE</h2>
-            <p className="text-gray-500 font-mono text-xs text-center mb-4">
-              Who is the Spy? ({votes.in}/{votes.total} votes cast)
-            </p>
-            <div className="space-y-2 mb-4">
-              {activePlayers.map((p) => {
-                const isMe = p.id === mySocketId.current;
-                return (
+            {/* ← NEW: eliminated players see a watch-only notice */}
+            {amEliminated ? (
+              <p className="text-gray-600 font-mono text-xs text-center py-4">
+                💀 You are eliminated and cannot vote. Watching...
+              </p>
+            ) : (
+              <>
+                <p className="text-gray-500 font-mono text-xs text-center mb-4">
+                  Who is the Spy? ({votes.in}/{votes.total} votes cast)
+                </p>
+                <div className="space-y-2 mb-4">
+                  {activePlayers.map((p) => {
+                    const isMe = p.id === mySocketId.current;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => !isMe && castVote(p.id)}
+                        disabled={!!myVote || isMe}
+                        className={`w-full py-3 rounded font-mono text-sm border transition-colors ${
+                          myVote === p.id
+                            ? 'border-red-500 bg-red-950 text-red-300'
+                            : isMe
+                            ? 'border-gray-800 text-gray-700 cursor-not-allowed'
+                            : 'border-gray-700 text-gray-300 hover:border-red-600 hover:text-red-300'
+                        }`}
+                      >
+                        {p.name} {isMe ? '(you)' : ''}
+                      </button>
+                    );
+                  })}
                   <button
-                    key={p.id}
-                    onClick={() => !isMe && castVote(p.id)}
-                    disabled={!!myVote || isMe}
+                    onClick={() => castVote('skip')}
+                    disabled={!!myVote}
                     className={`w-full py-3 rounded font-mono text-sm border transition-colors ${
-                      myVote === p.id
-                        ? 'border-red-500 bg-red-950 text-red-300'
-                        : isMe
-                        ? 'border-gray-800 text-gray-700 cursor-not-allowed'
-                        : 'border-gray-700 text-gray-300 hover:border-red-600 hover:text-red-300'
+                      myVote === 'skip'
+                        ? 'border-blue-500 bg-blue-950 text-blue-300'
+                        : 'border-gray-700 text-gray-500 hover:border-blue-600 hover:text-blue-300'
                     }`}
                   >
-                    {p.name} {isMe ? '(you)' : ''}
+                    Skip (don't eject anyone)
                   </button>
-                );
-              })}
-              <button
-                onClick={() => castVote('skip')}
-                disabled={!!myVote}
-                className={`w-full py-3 rounded font-mono text-sm border transition-colors ${
-                  myVote === 'skip'
-                    ? 'border-blue-500 bg-blue-950 text-blue-300'
-                    : 'border-gray-700 text-gray-500 hover:border-blue-600 hover:text-blue-300'
-                }`}
-              >
-                Skip (don't eject anyone)
-              </button>
-            </div>
-            {myVote && <p className="text-green-600 font-mono text-xs text-center">✓ Vote cast. Waiting for others...</p>}
+                </div>
+                {myVote && <p className="text-green-600 font-mono text-xs text-center">✓ Vote cast. Waiting for others...</p>}
+              </>
+            )}
           </div>
         </div>
       )}

@@ -12,7 +12,7 @@ function createRoom(roomCode, hostId, hostName) {
         ready: false 
       }
     ],
-    
+    eliminatedPlayers: [],
     language: 'java',
     scenario: 'bank',
     timerMinutes: 8,

@@ -100,6 +100,7 @@ function handleConnection(socket, io) {
 
     room.editorContent = {};
     room.editorVersions = {};
+    room.eliminatedPlayers = [];
 
     room.players.forEach((p) => {
       room.editorContent[p.id] = `// ===== ${p.name}'s region =====\n// Write your code here\n`;
@@ -118,6 +119,7 @@ function handleConnection(socket, io) {
         skeleton: scenario.skeleton,
         scenario: { name: scenario.name, tests: scenario.tests },
         players: room.players,
+        eliminatedPlayers: room.eliminatedPlayers,
         editorContent: room.editorContent,
         gameEndTime: room.gameEndTime,
         isSpy: p.id === room.spyId
@@ -137,6 +139,14 @@ function handleConnection(socket, io) {
   socket.on('region_update', ({ roomCode, targetPlayerId, content, version }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
+
+    const isEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
+    if (isEliminated) {
+      return socket.emit('edit_rejected', {
+        targetPlayerId,
+        message: 'You have been eliminated and cannot edit.'
+      });
+    }
 
     if (!canEditRegion(room, socket.id, targetPlayerId)) {
       return socket.emit('edit_rejected', {
@@ -171,6 +181,12 @@ function handleConnection(socket, io) {
   socket.on('emergency_call', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
+
+    const isEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
+    if (isEliminated) {
+      return socket.emit('error', { message: 'Eliminated players cannot call an emergency.' });
+    }
+
     if ((room.emergencyCalls[socket.id] || 0) >= 1) {
       return socket.emit('error', { message: 'You already used your Emergency Call.' });
     }
@@ -192,6 +208,10 @@ function handleConnection(socket, io) {
   socket.on('cast_vote', ({ roomCode, votedFor }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'voting') return;
+
+    const isEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
+    if (isEliminated) return;
+
     room.votes[socket.id] = votedFor;
 
     const totalPlayers = room.players.length;
@@ -254,6 +274,10 @@ function resolveVote(room, roomCode, io) {
   if (ejected) {
     const ejectedPlayer = room.players.find((p) => p.id === ejected);
     const wasTheSpy = ejected === room.spyId;
+
+    if (ejectedPlayer) {
+      room.eliminatedPlayers.push({ id: ejectedPlayer.id, name: ejectedPlayer.name });
+    }
     room.players = room.players.filter((p) => p.id !== ejected);
 
     if (wasTheSpy) {
@@ -262,22 +286,27 @@ function resolveVote(room, roomCode, io) {
       room.state = 'playing';
       io.to(roomCode).emit('vote_result', {
         ejected: ejectedPlayer?.name,
+        ejectedId: ejected,
         wasTheSpy: false,
-        players: room.players
+        players: room.players,
+        eliminatedPlayers: room.eliminatedPlayers
       });
     }
   } else {
     room.state = 'playing';
-    io.to(roomCode).emit('vote_result', { ejected: null, players: room.players });
+    io.to(roomCode).emit('vote_result', {
+      ejected: null,
+      players: room.players,
+      eliminatedPlayers: room.eliminatedPlayers
+    });
   }
 }
 
 function endGame(room, roomCode, io, winner, message) {
   room.state = 'ended';
-  const spyPlayer = room.players.find((p) => p.id === room.spyId) || {
-    name: 'Unknown',
-    id: room.spyId
-  };
+  const spyPlayer = room.players.find((p) => p.id === room.spyId) ||
+    room.eliminatedPlayers.find((p) => p.id === room.spyId) ||
+    { name: 'Unknown', id: room.spyId };
 
   io.to(roomCode).emit('game_end', {
     winner,
@@ -285,7 +314,8 @@ function endGame(room, roomCode, io, winner, message) {
     spyName: spyPlayer.name,
     spyTask: room.taskCards[room.spyId],
     finalCode: room.editorContent,
-    players: room.players
+    players: room.players,
+    eliminatedPlayers: room.eliminatedPlayers
   });
 }
 
