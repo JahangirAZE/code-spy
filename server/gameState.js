@@ -5,16 +5,16 @@ function createRoom(roomCode, hostId, hostName) {
     code: roomCode,
     hostId,
     players: [{ id: hostId, name: hostName, ready: false }],
-    state: 'lobby',      // lobby | playing | voting | ended
+    state: 'lobby',
     language: 'java',
     scenario: 'bank',
     timerMinutes: 8,
     spyId: null,
-    roles: {},           // socketId -> 'coder' | 'spy'
-    taskCards: {},       // socketId -> task card text
-    editorContent: {},   // regionKey -> code string
-    votes: {},           // socketId -> votedFor socketId
-    emergencyCalls: {},  // socketId -> how many used
+    roles: {},
+    taskCards: {}, 
+    editorContent: {},
+    votes: {},
+    emergencyCalls: {},
     votingInitiator: null,
     discussionEndTime: null,
     gameEndTime: null,

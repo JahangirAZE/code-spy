@@ -62,7 +62,11 @@ function handleConnection(socket, io) {
     if (language) room.language = language;
     if (scenario) room.scenario = scenario;
     if (timerMinutes) room.timerMinutes = timerMinutes;
-    io.to(roomCode).emit('settings_updated', { language: room.language, scenario: room.scenario, timerMinutes: room.timerMinutes });
+    io.to(roomCode).emit('settings_updated', {
+      language: room.language,
+      scenario: room.scenario,
+      timerMinutes: room.timerMinutes
+    });
   });
 
   socket.on('start_game', ({ roomCode }) => {
@@ -88,8 +92,12 @@ function handleConnection(socket, io) {
       room.emergencyCalls[p.id] = 0;
     });
 
+    room.editorContent = {};
+    room.editorVersions = {};
+
     room.players.forEach((p) => {
       room.editorContent[p.id] = `// ===== ${p.name}'s region =====\n// Write your code here\n`;
+      room.editorVersions[p.id] = 0;
     });
 
     room.state = 'playing';
@@ -110,7 +118,7 @@ function handleConnection(socket, io) {
       });
     });
 
-    console.log(`🎮 Game started in room ${roomCode}. Spy: ${room.players.find(p => p.id === room.spyId)?.name}`);
+    console.log(`🎮 Game started in room ${roomCode}. Spy: ${room.players.find((p) => p.id === room.spyId)?.name}`);
 
     setTimeout(() => {
       const r = getRoom(roomCode);
@@ -120,7 +128,7 @@ function handleConnection(socket, io) {
     }, room.timerMinutes * 60 * 1000);
   });
 
-  socket.on('region_update', ({ roomCode, targetPlayerId, content }) => {
+  socket.on('region_update', ({ roomCode, targetPlayerId, content, version }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
 
@@ -131,13 +139,24 @@ function handleConnection(socket, io) {
       });
     }
 
+    const serverVersion = room.editorVersions?.[targetPlayerId] || 0;
+
+    if (version !== undefined && version < serverVersion) {
+      return socket.emit('region_resync', {
+        targetPlayerId,
+        content: room.editorContent[targetPlayerId],
+        version: serverVersion
+      });
+    }
+
+    room.editorVersions[targetPlayerId] = serverVersion + 1;
     room.editorContent[targetPlayerId] = content;
 
-    io.to(roomCode).emit('region_updated', {
+    socket.to(roomCode).emit('region_updated', {
       editorId: socket.id,
       targetPlayerId,
       content,
-      updatedAt: Date.now()
+      version: room.editorVersions[targetPlayerId]
     });
   });
 
@@ -154,7 +173,7 @@ function handleConnection(socket, io) {
     room.votingInitiator = socket.id;
     room.discussionEndTime = Date.now() + 10 * 1000;
 
-    const caller = room.players.find(p => p.id === socket.id);
+    const caller = room.players.find((p) => p.id === socket.id);
     io.to(roomCode).emit('freeze_editor', {
       calledBy: caller?.name || 'Someone',
       discussionEndTime: room.discussionEndTime
@@ -180,7 +199,7 @@ function handleConnection(socket, io) {
   socket.on('disconnect', () => {
     console.log(`❌ Disconnected: ${socket.id}`);
     for (const [code, room] of require('./gameState').rooms) {
-      const idx = room.players.findIndex(p => p.id === socket.id);
+      const idx = room.players.findIndex((p) => p.id === socket.id);
       if (idx !== -1) {
         room.players.splice(idx, 1);
         io.to(code).emit('player_left', { players: room.players, leftId: socket.id });
@@ -193,12 +212,12 @@ function handleConnection(socket, io) {
 
 function resolveVote(room, roomCode, io) {
   const voteCounts = {};
-  room.players.forEach(p => { voteCounts[p.id] = 0; });
-  voteCounts['skip'] = 0;
+  room.players.forEach((p) => { voteCounts[p.id] = 0; });
+  voteCounts.skip = 0;
 
-  Object.values(room.votes).forEach(v => {
+  Object.values(room.votes).forEach((v) => {
     if (voteCounts[v] !== undefined) voteCounts[v]++;
-    else voteCounts['skip']++;
+    else voteCounts.skip++;
   });
 
   let maxVotes = 0;
@@ -207,17 +226,22 @@ function resolveVote(room, roomCode, io) {
 
   Object.entries(voteCounts).forEach(([id, count]) => {
     if (id === 'skip') return;
-    if (count > maxVotes) { maxVotes = count; ejected = id; tied = false; }
-    else if (count === maxVotes && count > 0) { tied = true; }
+    if (count > maxVotes) {
+      maxVotes = count;
+      ejected = id;
+      tied = false;
+    } else if (count === maxVotes && count > 0) {
+      tied = true;
+    }
   });
 
-  const skipCount = voteCounts['skip'] || 0;
+  const skipCount = voteCounts.skip || 0;
   if (tied || skipCount >= maxVotes) ejected = null;
 
   if (ejected) {
-    const ejectedPlayer = room.players.find(p => p.id === ejected);
+    const ejectedPlayer = room.players.find((p) => p.id === ejected);
     const wasTheSpy = ejected === room.spyId;
-    room.players = room.players.filter(p => p.id !== ejected);
+    room.players = room.players.filter((p) => p.id !== ejected);
 
     if (wasTheSpy) {
       endGame(room, roomCode, io, 'coders', `${ejectedPlayer?.name} was the Spy! Coders win!`);
@@ -237,8 +261,10 @@ function resolveVote(room, roomCode, io) {
 
 function endGame(room, roomCode, io, winner, message) {
   room.state = 'ended';
-  const spyPlayer = room.players.find(p => p.id === room.spyId) ||
-    { name: 'Unknown', id: room.spyId };
+  const spyPlayer = room.players.find((p) => p.id === room.spyId) || {
+    name: 'Unknown',
+    id: room.spyId
+  };
 
   io.to(roomCode).emit('game_end', {
     winner,
