@@ -305,7 +305,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
     markPlayerTyping,
     pushTimedNotification,
     pushPersistentNotification,
-    removeNotification
+    removeNotification,
+    debouncedEmit
   ]);
 
   function handleRegionChange(targetPlayerId, value = '') {
