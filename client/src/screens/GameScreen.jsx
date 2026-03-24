@@ -117,7 +117,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('player_left');
       socket.off('game_end');
     };
-  }, [activePlayers, onGameEnd]);
+  }, [activePlayers, onGameEnd, buildFullCode]);
 
   // ── Editor mounted ────────────────────────────────────────────
   function handleEditorMount(editor, monaco) {
