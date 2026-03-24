@@ -39,10 +39,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const debouncedEmit = useMemo(
     () =>
-      debounce((roomCode, targetPlayerId, content, version) => {
-        socket.emit('region_update', { roomCode, targetPlayerId, content, version });
+      debounce((roomCodeParam, targetPlayerId, content, version) => {
+        socket.emit('region_update', { roomCode: roomCodeParam, targetPlayerId, content, version });
       }, 80),
-    [roomCode]
+    []
   );
 
   const addOrUpdateNotification = useCallback((item) => {
@@ -244,12 +244,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
     };
 
     const handleRegionUpdated = ({ editorId, targetPlayerId, content, version }) => {
-      // 1. Skip if the update is from us (we've already optimistically updated)
       if (editorId === mySocketId.current) return;
-
       setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
       setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
-
       const editorPlayer = activePlayers.find((p) => p.id === editorId);
       if (editorPlayer) markPlayerTyping(editorId, editorPlayer.name);
     };
@@ -278,6 +275,9 @@ export default function GameScreen({ gameData, onGameEnd }) {
     socket.on('region_resync', handleRegionResync);
     socket.on('edit_rejected', handleEditRejected);
 
+    const typingTimeouts = typingTimeoutsRef.current;
+    const notificationTimers = notificationTimersRef.current;
+
     return () => {
       socket.off('code_update', handleCodeUpdate);
       socket.off('freeze_editor', handleFreezeEditor);
@@ -288,8 +288,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('region_updated', handleRegionUpdated);
       socket.off('region_resync', handleRegionResync);
       socket.off('edit_rejected', handleEditRejected);
-      Object.values(typingTimeoutsRef.current).forEach(clearTimeout);
-      Object.values(notificationTimersRef.current).forEach(clearTimeout);
+      Object.values(typingTimeouts).forEach(clearTimeout);
+      Object.values(notificationTimers).forEach(clearTimeout);
     };
   }, [
     activePlayers,
@@ -302,7 +302,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   function handleRegionChange(targetPlayerId, value = '') {
     if (frozen) return;
-
     const canEdit = isSpy || targetPlayerId === mySocketId.current;
     if (!canEdit) {
       pushTimedNotification({
@@ -314,11 +313,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
       return;
     }
 
-    setEditorContent((prev) => ({
-      ...prev,
-      [targetPlayerId]: value
-    }));
-
+    setEditorContent((prev) => ({ ...prev, [targetPlayerId]: value }));
     markPlayerTyping(mySocketId.current, playerName);
 
     const currentVersion = editorVersions[targetPlayerId] || 0;
