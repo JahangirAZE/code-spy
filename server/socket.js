@@ -453,6 +453,7 @@ function endGame(room, roomCode, io, winner, message) {
   io.to(roomCode).emit('game_end', {
     winner,
     message,
+    spyId: room.spyId,
     spyName: spyPlayer.name,
     spyTask: room.taskCards[room.spyId],
     finalCode: room.editorContent,

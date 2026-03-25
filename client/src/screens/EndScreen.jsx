@@ -4,6 +4,7 @@ export default function EndScreen({ endData, onPlayAgain }) {
   const {
     winner,
     message,
+    spyId,
     spyName,
     spyTask,
     finalCode,
@@ -17,10 +18,10 @@ export default function EndScreen({ endData, onPlayAgain }) {
   const codersWin = winner === 'coders';
 
   const allParticipants = [
-    ...players.map((p) => ({ ...p, status: p.name === spyName ? 'spy' : 'survivor' })),
+    ...players.map((p) => ({ ...p, status: p.id === spyId ? 'spy' : 'survivor' })),
     ...eliminatedPlayers.map((p) => ({
       ...p,
-      status: p.name === spyName ? 'spy-eliminated' : 'eliminated'
+      status: p.id === spyId ? 'spy-eliminated' : 'eliminated'
     }))
   ];
 
