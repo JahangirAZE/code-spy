@@ -28,7 +28,8 @@ function createRoom(roomCode, hostId, hostName) {
     maxPlayers: 6,
     votingInitiator: null,
     discussionEndTime: null,
-    gameTimeout: null
+    gameTimeout: null,
+    chatMessages: []
   };
   rooms.set(roomCode, room);
   return room;

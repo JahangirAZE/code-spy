@@ -5,6 +5,8 @@ const { generateRoomCode } = require('./roomCodeGenerator');
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 6;
 const ALLOWED_TIMERS = [5, 8, 10];
+const MAX_CHAT_MESSAGE_LENGTH = 100;
+const MAX_CHAT_HISTORY = 100;
 
 function canEditRegion(room, editorSocketId, targetPlayerId) {
   if (!room || room.state !== 'playing') return false;
@@ -20,7 +22,10 @@ function handleConnection(socket, io) {
   socket.on('create_room', ({ playerName }) => {
     const roomCode = generateRoomCode();
     const room = createRoom(roomCode, socket.id, playerName);
+
     room.timerMinutes = room.timerMinutes || 8;
+    room.chatMessages = room.chatMessages || [];
+
     socket.join(roomCode);
     socket.emit('room_created', {
       roomCode,
@@ -28,8 +33,10 @@ function handleConnection(socket, io) {
       scenarios: listScenarios(),
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
-      timerMinutes: room.timerMinutes
+      timerMinutes: room.timerMinutes,
+      chatMessages: room.chatMessages
     });
+
     console.log(`room ${roomCode} created by ${playerName}`);
   });
 
@@ -41,10 +48,11 @@ function handleConnection(socket, io) {
       return socket.emit('error', { message: 'Room is full.' });
     }
 
+    room.chatMessages = room.chatMessages || [];
     room.players.push({ id: socket.id, name: playerName, ready: false });
     socket.join(roomCode);
 
-    io.to(roomCode).emit('player_joined', { 
+    io.to(roomCode).emit('player_joined', {
       players: room.players,
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS
@@ -57,7 +65,8 @@ function handleConnection(socket, io) {
       scenarios: listScenarios(),
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
-      timerMinutes: room.timerMinutes
+      timerMinutes: room.timerMinutes,
+      chatMessages: room.chatMessages
     });
 
     console.log(`${playerName} joined room ${roomCode}`);
@@ -90,6 +99,8 @@ function handleConnection(socket, io) {
     if (room.players.length < room.minPlayers) {
       return socket.emit('error', { message: `Need at least ${room.minPlayers} players.` });
     }
+
+    room.chatMessages = room.chatMessages || [];
 
     const scenario = getScenario(room.scenario);
     const spyIndex = Math.floor(Math.random() * room.players.length);
@@ -132,7 +143,8 @@ function handleConnection(socket, io) {
         eliminatedPlayers: room.eliminatedPlayers,
         editorContent: room.editorContent,
         gameEndTime: room.gameEndTime,
-        isSpy: p.id === room.spyId
+        isSpy: p.id === room.spyId,
+        chatMessages: room.chatMessages
       });
     });
 
@@ -237,6 +249,40 @@ function handleConnection(socket, io) {
       resolveVote(room, roomCode, io);
     }
   });
+
+  socket.on('chat_message', ({ roomCode, message }) => {
+    const room = getRoom(roomCode);
+    if (!room) return;
+
+    const sender =
+      room.players.find((p) => p.id === socket.id) ||
+      room.eliminatedPlayers.find((p) => p.id === socket.id);
+
+    if (!sender) return;
+
+    const normalizedMessage = String(message || '').trim();
+    if (!normalizedMessage) return;
+
+    const safeMessage = normalizedMessage.slice(0, MAX_CHAT_MESSAGE_LENGTH);
+
+    room.chatMessages = room.chatMessages || [];
+
+    const chatItem = {
+      id: `${socket.id}-${Date.now()}`,
+      senderId: socket.id,
+      senderName: sender.name,
+      message: safeMessage,
+      timestamp: Date.now()
+    };
+
+    room.chatMessages.push(chatItem);
+
+    if (room.chatMessages.length > MAX_CHAT_HISTORY) {
+      room.chatMessages = room.chatMessages.slice(-MAX_CHAT_HISTORY);
+    }
+
+    io.to(roomCode).emit('chat_message', chatItem);
+  })
 
   socket.on('disconnect', () => {
     console.log(`disconnected: ${socket.id}`);

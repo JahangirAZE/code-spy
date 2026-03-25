@@ -3,7 +3,9 @@ import debounce from 'lodash/debounce';
 import socket from '../utils/socket';
 import NotificationFeed from './NotificationFeed';
 import RegionEditor from './RegionEditor';
+import GameChat from './GameChat';
 import useGameNotifications from '../utils/useGameNotifications';
+import { useCallback } from 'react';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
@@ -16,7 +18,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
     isSpy,
     roomCode,
     playerName,
-    eliminatedPlayers: initialEliminated = []
+    eliminatedPlayers: initialEliminated = [],
+    chatMessages: initialChatMessages = []
   } = gameData;
 
   const [editorContent, setEditorContent] = useState(initialContent || {});
@@ -30,6 +33,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [emergencyUsed, setEmergencyUsed] = useState(false);
   const [activePlayers, setActivePlayers] = useState(players || []);
   const [eliminatedPlayers, setEliminatedPlayers] = useState(initialEliminated);
+  const [chatMessages, setChatMessages] = useState(initialChatMessages);
+  const [chatInput, setChatInput] = useState('');
 
   const oneMinuteNotifiedRef = useRef(false);
   const mySocketId = useRef(socket.id);
@@ -71,6 +76,19 @@ export default function GameScreen({ gameData, onGameEnd }) {
       }, 80),
     []
   );
+
+  const handleSendChatMessage = useCallback(() => {
+    const trimmedMessage = chatInput.trim();
+
+    if (!trimmedMessage) return;
+
+    socket.emit('chat_message', {
+      roomCode,
+      message: trimmedMessage.slice(0, 100)
+    });
+
+    setChatInput('');
+  }, [chatInput, roomCode]);
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -278,6 +296,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
       );
     };
 
+    const handleChatMessage = (chatItem) => {
+      setChatMessages((prev) => [...prev, chatItem]);
+    };
+
     socket.on('code_update', handleCodeUpdate);
     socket.on('freeze_editor', handleFreezeEditor);
     socket.on('vote_update', handleVoteUpdate);
@@ -287,6 +309,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
     socket.on('region_updated', handleRegionUpdated);
     socket.on('region_resync', handleRegionResync);
     socket.on('edit_rejected', handleEditRejected);
+    socket.on('chat_message', handleChatMessage);
 
     return () => {
       socket.off('code_update', handleCodeUpdate);
@@ -298,6 +321,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('region_updated', handleRegionUpdated);
       socket.off('region_resync', handleRegionResync);
       socket.off('edit_rejected', handleEditRejected);
+      socket.off('chat_message', handleChatMessage);
       debouncedEmit.cancel();
     };
   }, [
@@ -488,63 +512,77 @@ export default function GameScreen({ gameData, onGameEnd }) {
           })}
         </div>
 
-        <div className="w-56 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
-          <div className="px-3 py-2 border-b border-gray-800">
-            <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3">
-            {/* ← NEW: show eliminated overlay over task card */}
-            {amEliminated ? (
-              <div className="space-y-3">
-                <div className="text-gray-600 font-mono text-xs font-bold">💀 ELIMINATED</div>
-                <p className="text-gray-700 font-mono text-xs leading-relaxed">
-                  You've been ejected from the game. Watch the remaining players and see how it ends.
-                </p>
-              </div>
-            ) : isSpy ? (
-              <div className="space-y-3">
-                <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
-                <div>
-                  <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
-                  <p className="text-red-300 font-mono text-xs">{taskCard?.method}</p>
+        <div className="w-72 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-3 py-2 border-b border-gray-800">
+              <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
+            </div>
+
+            <div className="overflow-y-auto p-3 min-h-0">
+              {amEliminated ? (
+                <div className="space-y-3">
+                  <div className="text-gray-600 font-mono text-xs font-bold">💀 ELIMINATED</div>
+                  <p className="text-gray-700 font-mono text-xs leading-relaxed">
+                    You've been ejected from the game. Watch the remaining players and see how it ends.
+                  </p>
                 </div>
-                <div>
-                  <p className="text-gray-500 font-mono text-xs mb-1">SABOTAGE</p>
-                  <p className="text-red-200 font-mono text-xs leading-relaxed">{taskCard?.sabotage}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500 font-mono text-xs mb-1">COVER</p>
-                  <p className="text-orange-300 font-mono text-xs leading-relaxed">{taskCard?.cover}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="text-green-400 font-mono text-xs font-bold">🟢 TASK — CODER</div>
-                <div>
-                  <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
-                  <p className="text-green-300 font-mono text-xs">{taskCard?.method}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500 font-mono text-xs mb-1">RULES</p>
-                  <ul className="space-y-1">
-                    {(taskCard?.rules || []).map((r, i) => (
-                      <li key={i} className="text-gray-300 font-mono text-xs leading-relaxed">· {r}</li>
-                    ))}
-                  </ul>
-                </div>
-                {taskCard?.hint && (
+              ) : isSpy ? (
+                <div className="space-y-3">
+                  <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
                   <div>
-                    <p className="text-gray-500 font-mono text-xs mb-1">HINT</p>
-                    <p className="text-yellow-600 font-mono text-xs leading-relaxed">{taskCard.hint}</p>
+                    <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
+                    <p className="text-red-300 font-mono text-xs">{taskCard?.method}</p>
                   </div>
-                )}
+                  <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">SABOTAGE</p>
+                    <p className="text-red-200 font-mono text-xs leading-relaxed">{taskCard?.sabotage}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">COVER</p>
+                    <p className="text-orange-300 font-mono text-xs leading-relaxed">{taskCard?.cover}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-green-400 font-mono text-xs font-bold">🟢 TASK — CODER</div>
+                  <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
+                    <p className="text-green-300 font-mono text-xs">{taskCard?.method}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">RULES</p>
+                    <ul className="space-y-1">
+                      {(taskCard?.rules || []).map((r, i) => (
+                        <li key={i} className="text-gray-300 font-mono text-xs leading-relaxed">· {r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  {taskCard?.hint && (
+                    <div>
+                      <p className="text-gray-500 font-mono text-xs mb-1">HINT</p>
+                      <p className="text-yellow-600 font-mono text-xs leading-relaxed">{taskCard.hint}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-4 pt-4 border-t border-gray-800">
+                <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">TEST CASES</p>
+                {(scenario?.tests || []).map((t, i) => (
+                  <div key={i} className="text-gray-600 font-mono text-xs mb-1">◻ {t.desc}</div>
+                ))}
               </div>
-            )}
-            <div className="mt-4 pt-4 border-t border-gray-800">
-              <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">TEST CASES</p>
-              {(scenario?.tests || []).map((t, i) => (
-                <div key={i} className="text-gray-600 font-mono text-xs mb-1">◻ {t.desc}</div>
-              ))}
+            </div>
+
+            <div className="h-80 min-h-0">
+              <GameChat
+                messages={chatMessages}
+                mySocketId={mySocketId.current}
+                value={chatInput}
+                onChange={setChatInput}
+                onSend={handleSendChatMessage}
+                disabled={false}
+              />
             </div>
           </div>
         </div>
