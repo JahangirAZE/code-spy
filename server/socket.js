@@ -232,7 +232,8 @@ function handleConnection(socket, io) {
 
     io.to(roomCode).emit('vote_update', { votesIn: totalVotes, totalPlayers });
 
-    if (totalVotes === totalPlayers) {
+    const activePlayers = room.players.length;
+    if (totalVotes === activePlayers) {
       resolveVote(room, roomCode, io);
     }
   });
@@ -357,24 +358,37 @@ function resolveVote(room, roomCode, io) {
     if (ejectedPlayer) {
       room.eliminatedPlayers.push({ id: ejectedPlayer.id, name: ejectedPlayer.name });
     }
+
     room.players = room.players.filter((p) => p.id !== ejected);
 
+    const remainingPlayers = room.players;
+    const spyStillAlive = remainingPlayers.some(p => p.id === room.spyId);
+
     if (wasTheSpy) {
-      endGame(room, roomCode, io, 'coders', `${ejectedPlayer?.name} was the Spy! Coders win!`);
-    } else {
-      room.state = 'playing';
-      io.to(roomCode).emit('vote_result', {
-        ejected: ejectedPlayer?.name,
-        ejectedId: ejected,
-        wasTheSpy: false,
-        players: room.players,
-        eliminatedPlayers: room.eliminatedPlayers
-      });
+      return endGame(
+        room,
+        roomCode,
+        io,
+        'coders',
+        `${ejectedPlayer?.name} was the Spy! Coders win!`
+      );
     }
-  } else {
+
+    if (remainingPlayers.length === 2 && spyStillAlive) {
+      return endGame(
+        room,
+        roomCode,
+        io,
+        'spy',
+        'Only one coder left — Spy wins!'
+      );
+    }
+
     room.state = 'playing';
     io.to(roomCode).emit('vote_result', {
-      ejected: null,
+      ejected: ejectedPlayer?.name,
+      ejectedId: ejected,
+      wasTheSpy: false,
       players: room.players,
       eliminatedPlayers: room.eliminatedPlayers
     });
