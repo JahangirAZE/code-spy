@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 
 const MAX_CHAT_MESSAGE_LENGTH = 100;
 
@@ -94,9 +94,9 @@ export default function GameChat({
           value={value}
           onChange={(event) => onChange(event.target.value.slice(0, MAX_CHAT_MESSAGE_LENGTH))}
           disabled={disabled}
-          rows={2}
+          rows={1}
           placeholder={disabled ? 'Chat unavailable' : 'Type a message...'}
-          className="w-full resize-none rounded border border-gray-800 bg-gray-900 px-2 py-2 text-gray-300 font-mono text-[11px] outline-none focus:border-green-700 disabled:opacity-50"
+          className="w-full resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-gray-300 font-mono text-[11px] outline-none focus:border-green-700 disabled:opacity-50 leading-tight"
         />
 
         <div className="flex items-center justify-between gap-2">
