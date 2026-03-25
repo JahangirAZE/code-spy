@@ -6,31 +6,46 @@ function createRoom(roomCode, hostId, hostName) {
     hostId,
     state: 'lobby',
     players: [
-      { 
-        id: hostId, 
-        name: hostName, 
-        ready: false 
+      {
+        id: hostId,
+        name: hostName,
+        ready: false
       }
     ],
     eliminatedPlayers: [],
     language: 'java',
     scenario: 'bank',
     timerMinutes: 8,
+
     roles: {},
     taskCards: {},
+
     emergencyCalls: {},
     votes: {},
-    editorContent: {},
-    editorVersions: {},
-    spyId: null,
-    gameEndTime: null,
-    minPlayers: 4,
-    maxPlayers: 6,
     votingInitiator: null,
     discussionEndTime: null,
+
+    spyId: null,
+    gameEndTime: null,
     gameTimeout: null,
-    chatMessages: []
+
+    minPlayers: 4,
+    maxPlayers: 6,
+
+    chatMessages: [],
+
+    sharedCode: '',
+    sharedCodeVersion: 0,
+
+    playerTaskQueues: {},
+    playerCurrentTask: {},
+    taskStatus: {},
+    taskOwners: {},
+    playerTaskProgress: {},
+    taskTestResults: {},
+    finalTestResults: null
   };
+
   rooms.set(roomCode, room);
   return room;
 }
@@ -47,4 +62,9 @@ function removeRoom(roomCode) {
   rooms.delete(roomCode);
 }
 
-module.exports = { createRoom, getRoom, removeRoom, rooms };
+module.exports = {
+  rooms,
+  createRoom,
+  getRoom,
+  removeRoom
+};

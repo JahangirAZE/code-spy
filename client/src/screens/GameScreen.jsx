@@ -1,19 +1,19 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
 import socket from '../utils/socket';
 import NotificationFeed from './NotificationFeed';
 import RegionEditor from './RegionEditor';
 import GameChat from './GameChat';
 import useGameNotifications from '../utils/useGameNotifications';
-import { useCallback } from 'react';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
-    taskCard,
-    skeleton,
+    taskCard: initialTaskCard,
     scenario,
     players,
-    editorContent: initialContent,
+    sharedCode: initialSharedCode,
+    sharedCodeVersion: initialSharedCodeVersion = 0,
+    progress: initialProgress,
     gameEndTime,
     isSpy,
     roomCode,
@@ -22,8 +22,14 @@ export default function GameScreen({ gameData, onGameEnd }) {
     chatMessages: initialChatMessages = []
   } = gameData;
 
-  const [editorContent, setEditorContent] = useState(initialContent || {});
-  const [editorVersions, setEditorVersions] = useState({});
+  const [taskCard, setTaskCard] = useState(initialTaskCard || null);
+  const [sharedCode, setSharedCode] = useState(initialSharedCode || '');
+  const [sharedCodeVersion, setSharedCodeVersion] = useState(initialSharedCodeVersion);
+  const [progress, setProgress] = useState(
+    initialProgress || { completed: 0, total: 0, percent: 0, perPlayer: {} }
+  );
+
+  const [taskTestResult, setTaskTestResult] = useState(null);
   const [timeLeft, setTimeLeft] = useState('');
   const [frozen, setFrozen] = useState(false);
   const [discussionLeft, setDiscussionLeft] = useState(null);
@@ -35,10 +41,11 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [eliminatedPlayers, setEliminatedPlayers] = useState(initialEliminated);
   const [chatMessages, setChatMessages] = useState(initialChatMessages);
   const [chatInput, setChatInput] = useState('');
+  const [isRunningTests, setIsRunningTests] = useState(false);
 
   const oneMinuteNotifiedRef = useRef(false);
   const mySocketId = useRef(socket.id);
-  const editorVersionsRef = useRef({});
+  const sharedVersionRef = useRef(initialSharedCodeVersion);
 
   const {
     notifications,
@@ -53,23 +60,15 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const amEliminated = eliminatedPlayers.some((p) => p.id === mySocketId.current);
 
-  const language =
-    skeleton?.includes('public class')
-      ? 'java'
-      : skeleton?.includes('def ')
-      ? 'python'
-      : 'csharp';
-
   useEffect(() => {
-    editorVersionsRef.current = editorVersions;
-  }, [editorVersions]);
+    sharedVersionRef.current = sharedCodeVersion;
+  }, [sharedCodeVersion]);
 
   const debouncedEmit = useMemo(
     () =>
-      debounce((roomCodeParam, targetPlayerId, content, version) => {
-        socket.emit('region_update', {
+      debounce((roomCodeParam, content, version) => {
+        socket.emit('shared_code_update', {
           roomCode: roomCodeParam,
-          targetPlayerId,
           content,
           version
         });
@@ -79,7 +78,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const handleSendChatMessage = useCallback(() => {
     const trimmedMessage = chatInput.trim();
-
     if (!trimmedMessage) return;
 
     socket.emit('chat_message', {
@@ -168,18 +166,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
   }, [frozen, discussionLeft, addOrUpdateNotification, removeNotification]);
 
   useEffect(() => {
-    const handleCodeUpdate = ({ playerId, content }) => {
-      const isEliminated = eliminatedPlayers.some((player) => player.id === playerId);
-      if (isEliminated) return;
-
-      setEditorContent((prev) => ({ ...prev, [playerId]: content }));
-
-      const player = activePlayers.find((currentPlayer) => currentPlayer.id === playerId);
-      if (player) {
-        markPlayerTyping(playerId, player.name);
-      }
-    };
-
     const handleFreezeEditor = ({ calledBy, discussionEndTime }) => {
       setFrozen(true);
       setDiscussionLeft(Math.ceil((discussionEndTime - Date.now()) / 1000));
@@ -238,7 +224,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     const handlePlayerLeft = ({ players: updatedPlayers, leftId }) => {
       const leftPlayer = activePlayers.find((player) => player.id === leftId);
-
       setActivePlayers(updatedPlayers);
 
       if (leftId) {
@@ -262,16 +247,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
       onGameEnd(data);
     };
 
-    const handleRegionUpdated = ({ editorId, targetPlayerId, content, version }) => {
+    const handleSharedCodeUpdated = ({ editorId, content, version }) => {
       if (editorId === mySocketId.current) return;
-      if (targetPlayerId === mySocketId.current) return;
 
-      const isEliminated = eliminatedPlayers.some((player) => player.id === editorId);
-      if (isEliminated) return;
-
-      setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
-      setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
-      editorVersionsRef.current[targetPlayerId] = version;
+      setSharedCode(content);
+      setSharedCodeVersion(version);
+      sharedVersionRef.current = version;
 
       const editorPlayer = activePlayers.find((player) => player.id === editorId);
       if (editorPlayer) {
@@ -279,9 +260,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
       }
     };
 
-    const handleRegionResync = ({ targetPlayerId, content, version }) => {
-      setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
-      setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
+    const handleSharedCodeResync = ({ content, version }) => {
+      setSharedCode(content);
+      setSharedCodeVersion(version);
+      sharedVersionRef.current = version;
     };
 
     const handleEditRejected = ({ message }) => {
@@ -300,33 +282,57 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setChatMessages((prev) => [...prev, chatItem]);
     };
 
-    socket.on('code_update', handleCodeUpdate);
+    const handleTaskTestResult = (payload) => {
+      setIsRunningTests(false);
+      setTaskTestResult(payload);
+      setProgress(payload.progress);
+
+      if (payload.nextTaskCard !== undefined) {
+        setTaskCard(payload.nextTaskCard);
+      }
+
+      if (payload.taskCompleted) {
+        pushPersistentNotification({
+          id: `task-passed-${Date.now()}`,
+          type: 'system',
+          message: '✅ Task completed. New task unlocked.',
+          createdAt: Date.now()
+        });
+      }
+    };
+
+    const handleProgressUpdated = ({ progress: nextProgress }) => {
+      setProgress(nextProgress);
+    };
+
     socket.on('freeze_editor', handleFreezeEditor);
     socket.on('vote_update', handleVoteUpdate);
     socket.on('vote_result', handleVoteResult);
     socket.on('player_left', handlePlayerLeft);
     socket.on('game_end', handleGameEnd);
-    socket.on('region_updated', handleRegionUpdated);
-    socket.on('region_resync', handleRegionResync);
+    socket.on('shared_code_updated', handleSharedCodeUpdated);
+    socket.on('shared_code_resync', handleSharedCodeResync);
     socket.on('edit_rejected', handleEditRejected);
     socket.on('chat_message', handleChatMessage);
+    socket.on('task_test_result', handleTaskTestResult);
+    socket.on('progress_updated', handleProgressUpdated);
 
     return () => {
-      socket.off('code_update', handleCodeUpdate);
       socket.off('freeze_editor', handleFreezeEditor);
       socket.off('vote_update', handleVoteUpdate);
       socket.off('vote_result', handleVoteResult);
       socket.off('player_left', handlePlayerLeft);
       socket.off('game_end', handleGameEnd);
-      socket.off('region_updated', handleRegionUpdated);
-      socket.off('region_resync', handleRegionResync);
+      socket.off('shared_code_updated', handleSharedCodeUpdated);
+      socket.off('shared_code_resync', handleSharedCodeResync);
       socket.off('edit_rejected', handleEditRejected);
       socket.off('chat_message', handleChatMessage);
+      socket.off('task_test_result', handleTaskTestResult);
+      socket.off('progress_updated', handleProgressUpdated);
       debouncedEmit.cancel();
     };
   }, [
     activePlayers,
-    eliminatedPlayers,
     onGameEnd,
     markPlayerTyping,
     pushTimedNotification,
@@ -337,37 +343,20 @@ export default function GameScreen({ gameData, onGameEnd }) {
     debouncedEmit
   ]);
 
-  function handleRegionChange(targetPlayerId, value = '') {
+  function handleSharedCodeChange(value = '') {
     if (amEliminated) return;
     if (frozen) return;
 
-    const canEdit = targetPlayerId === mySocketId.current;
-
-    if (!canEdit) {
-      pushTimedNotification(
-        {
-          id: `forbidden-${Date.now()}`,
-          type: 'warning',
-          message: '🔒 You cannot edit this region',
-          createdAt: Date.now()
-        },
-        2000
-      );
-      return;
-    }
-
-    setEditorContent((prev) => ({ ...prev, [targetPlayerId]: value }));
+    setSharedCode(value);
     markPlayerTyping(mySocketId.current, playerName);
 
-    const currentVersion = editorVersionsRef.current[targetPlayerId] || 0;
-    editorVersionsRef.current[targetPlayerId] = currentVersion + 1;
+    const currentVersion = sharedVersionRef.current || 0;
+    const nextVersion = currentVersion + 1;
 
-    setEditorVersions((prev) => ({
-      ...prev,
-      [targetPlayerId]: currentVersion + 1
-    }));
+    sharedVersionRef.current = nextVersion;
+    setSharedCodeVersion(nextVersion);
 
-    debouncedEmit(roomCode, targetPlayerId, value, currentVersion);
+    debouncedEmit(roomCode, value, currentVersion);
   }
 
   function handleEmergency() {
@@ -380,6 +369,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
     if (amEliminated || myVote) return;
     setMyVote(targetId);
     socket.emit('cast_vote', { roomCode, votedFor: targetId });
+  }
+
+  function runTests() {
+    if (amEliminated || frozen || !taskCard || isRunningTests) return;
+    setIsRunningTests(true);
+    socket.emit('run_task_tests', { roomCode });
   }
 
   const [mins = '00'] = timeLeft.split(':');
@@ -401,15 +396,16 @@ export default function GameScreen({ gameData, onGameEnd }) {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-950" style={{ height: '100vh' }}>
+    <div className="h-screen w-full overflow-hidden flex flex-col bg-gray-950">
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         <span className="text-green-500 font-display tracking-widest text-lg">CODE SPY</span>
+
         <div className="flex items-center gap-4">
           <span className="text-gray-600 font-mono text-xs">{roomCode}</span>
           <span className={`font-display text-2xl ${timerColor}`}>⏱ {timeLeft}</span>
         </div>
+
         <div className="flex items-center gap-2">
-          {/* ← NEW: eliminated banner in header */}
           {amEliminated && (
             <span className="font-mono text-xs px-2 py-1 rounded bg-gray-800 text-gray-500 border border-gray-700">
               💀 ELIMINATED
@@ -427,17 +423,34 @@ export default function GameScreen({ gameData, onGameEnd }) {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-800 bg-gray-950 flex-shrink-0">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-gray-500 font-mono text-xs tracking-widest">TEAM PROGRESS</p>
+          <p className="text-green-400 font-mono text-xs">
+            {progress.completed}/{progress.total}
+          </p>
+        </div>
+        <div className="h-2 rounded bg-gray-900 overflow-hidden border border-gray-800">
+          <div
+            className="h-full bg-green-500 transition-all duration-300"
+            style={{ width: `${progress.percent || 0}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         <div className="w-56 border-r border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
-          <div className="px-3 py-2 border-b border-gray-800">
+          <div className="px-3 py-2 border-b border-gray-800 flex-shrink-0">
             <p className="text-gray-600 font-mono text-xs tracking-widest">PLAYERS</p>
           </div>
-          <div className="max-h-64 overflow-y-auto p-2 space-y-2">
-            {/* ← NEW: render active + eliminated players together */}
+
+          <div className="max-h-64 overflow-y-auto p-2 space-y-2 flex-shrink-0">
             {allPlayersForSidebar.map((p) => {
               const isMe = p.id === mySocketId.current;
               const isTyping = !!typingPlayers[p.id];
               const isElim = !!p.eliminated;
+              const playerProgress = progress.perPlayer?.[p.id] || { done: 0, total: 0 };
+
               return (
                 <div
                   key={p.id}
@@ -465,8 +478,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
                       {p.name}
                     </span>
                   </div>
+
+                  <div className="text-gray-600 font-mono text-[10px] mt-1">
+                    tasks {playerProgress.done}/{playerProgress.total}
+                  </div>
+
                   {isMe && !isElim && <div className="text-green-700 font-mono text-xs mt-1">you</div>}
-                  {/* ← NEW: show eliminated label to the eliminated player themselves */}
                   {isMe && isElim && (
                     <div className="text-gray-600 font-mono text-xs mt-1">you · eliminated</div>
                   )}
@@ -477,10 +494,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
               );
             })}
           </div>
-          <div className="flex-1 min-h-0">
+
+          <div className="flex-1 min-h-0 overflow-hidden">
             <NotificationFeed items={notifications} />
           </div>
-          <div className="p-2 border-t border-gray-800">
+
+          <div className="p-2 border-t border-gray-800 flex-shrink-0">
             <button
               onClick={handleEmergency}
               disabled={amEliminated || emergencyUsed || frozen}
@@ -495,30 +514,26 @@ export default function GameScreen({ gameData, onGameEnd }) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {activePlayers.map((p) => {
-            const editable = !frozen && !amEliminated && p.id === mySocketId.current;
-            return (
-              <RegionEditor
-                key={p.id}
-                title={`${p.name}'s region`}
-                value={editorContent[p.id] || `// ===== ${p.name}'s region =====\n// Write your code here\n`}
-                language={language}
-                editable={editable}
-                locked={!editable}
-                onChange={(value) => handleRegionChange(p.id, value)}
-              />
-            );
-          })}
+        <div className="flex-1 min-w-0 min-h-0 overflow-hidden p-4">
+          <div className="h-full w-full">
+            <RegionEditor
+              title={`${scenario?.name || 'Scenario'} — shared live code`}
+              value={sharedCode}
+              language="java"
+              editable={!frozen && !amEliminated}
+              locked={frozen || amEliminated}
+              onChange={handleSharedCodeChange}
+            />
+          </div>
         </div>
 
-        <div className="w-72 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
+        <div className="w-80 border-l border-gray-800 bg-gray-950 flex flex-col flex-shrink-0">
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-3 py-2 border-b border-gray-800">
+            <div className="px-3 py-2 border-b border-gray-800 flex-shrink-0">
               <p className="text-gray-600 font-mono text-xs tracking-widest">MY TASK</p>
             </div>
 
-            <div className="overflow-y-auto p-3 min-h-0">
+            <div className="overflow-y-auto p-3 min-h-0 space-y-4">
               {amEliminated ? (
                 <div className="space-y-3">
                   <div className="text-gray-600 font-mono text-xs font-bold">💀 ELIMINATED</div>
@@ -526,9 +541,20 @@ export default function GameScreen({ gameData, onGameEnd }) {
                     You've been ejected from the game. Watch the remaining players and see how it ends.
                   </p>
                 </div>
+              ) : !taskCard ? (
+                <div className="space-y-3">
+                  <div className="text-green-400 font-mono text-xs font-bold">✅ ALL TASKS DONE</div>
+                  <p className="text-gray-400 font-mono text-xs leading-relaxed">
+                    You completed your task queue. Wait for the rest of the room or final results.
+                  </p>
+                </div>
               ) : isSpy ? (
                 <div className="space-y-3">
-                  <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — HACKER</div>
+                  <div className="text-red-400 font-mono text-xs font-bold">🔴 MISSION — SPY</div>
+                  <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">TASK</p>
+                    <p className="text-red-300 font-mono text-xs">{taskCard?.title}</p>
+                  </div>
                   <div>
                     <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                     <p className="text-red-300 font-mono text-xs">{taskCard?.method}</p>
@@ -546,18 +572,24 @@ export default function GameScreen({ gameData, onGameEnd }) {
                 <div className="space-y-3">
                   <div className="text-green-400 font-mono text-xs font-bold">🟢 TASK — CODER</div>
                   <div>
+                    <p className="text-gray-500 font-mono text-xs mb-1">TASK</p>
+                    <p className="text-green-300 font-mono text-xs">{taskCard?.title}</p>
+                  </div>
+                  <div>
                     <p className="text-gray-500 font-mono text-xs mb-1">METHOD</p>
                     <p className="text-green-300 font-mono text-xs">{taskCard?.method}</p>
                   </div>
                   <div>
                     <p className="text-gray-500 font-mono text-xs mb-1">RULES</p>
                     <ul className="space-y-1">
-                      {(taskCard?.rules || []).map((r, i) => (
-                        <li key={i} className="text-gray-300 font-mono text-xs leading-relaxed">· {r}</li>
+                      {(taskCard?.rules || []).map((rule, index) => (
+                        <li key={index} className="text-gray-300 font-mono text-xs leading-relaxed">
+                          · {rule}
+                        </li>
                       ))}
                     </ul>
                   </div>
-                  {taskCard?.hint && (
+                  {!!taskCard?.hint && (
                     <div>
                       <p className="text-gray-500 font-mono text-xs mb-1">HINT</p>
                       <p className="text-yellow-600 font-mono text-xs leading-relaxed">{taskCard.hint}</p>
@@ -566,23 +598,72 @@ export default function GameScreen({ gameData, onGameEnd }) {
                 </div>
               )}
 
-              <div className="mt-4 pt-4 border-t border-gray-800">
-                <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">TEST CASES</p>
-                {(scenario?.tests || []).map((t, i) => (
-                  <div key={i} className="text-gray-600 font-mono text-xs mb-1">◻ {t.desc}</div>
-                ))}
-              </div>
-            </div>
+              {taskCard && (
+                <>
+                  <div className="pt-3 border-t border-gray-800">
+                    <p className="text-gray-600 font-mono text-xs tracking-widest mb-2">VISIBLE TESTS</p>
+                    {(taskCard?.visibleTests || []).map((test) => (
+                      <div key={test.id} className="text-gray-400 font-mono text-xs mb-1">
+                        ◻ {test.desc}
+                      </div>
+                    ))}
+                  </div>
 
-            <div className="h-80 min-h-0">
-              <GameChat
-                messages={chatMessages}
-                mySocketId={mySocketId.current}
-                value={chatInput}
-                onChange={setChatInput}
-                onSend={handleSendChatMessage}
-                disabled={false}
-              />
+                  <button
+                    onClick={runTests}
+                    disabled={isRunningTests || frozen || amEliminated}
+                    className={`w-full py-2 rounded font-mono text-xs font-bold transition-colors ${
+                      isRunningTests || frozen || amEliminated
+                        ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
+                        : 'bg-green-700 hover:bg-green-600 text-black'
+                    }`}
+                  >
+                    {isRunningTests ? 'RUNNING TESTS...' : 'RUN TESTS'}
+                  </button>
+                </>
+              )}
+
+              {taskTestResult && (
+                <div className="border border-gray-800 rounded p-3 bg-gray-900">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-gray-500 font-mono text-xs tracking-widest">LAST RESULT</p>
+                    <p className="font-mono text-xs text-gray-300">
+                      {taskTestResult.passed}/{taskTestResult.passed + taskTestResult.failed}
+                    </p>
+                  </div>
+
+                  {taskTestResult.compileError ? (
+                    <pre className="text-red-400 font-mono text-[10px] whitespace-pre-wrap break-words">
+                      {taskTestResult.compileError}
+                    </pre>
+                  ) : (
+                    <div className="space-y-1">
+                      {(taskTestResult.results || []).map((result) => (
+                        <div
+                          key={result.id}
+                          className={`font-mono text-[10px] ${
+                            result.status === 'passed' ? 'text-green-400' : 'text-red-400'
+                          }`}
+                        >
+                          {result.status === 'passed' ? '✅' : '❌'} {result.id}
+                          {result.message ? ` — ${result.message}` : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="h-72 min-h-0">
+                <GameChat
+                  messages={chatMessages}
+                  mySocketId={mySocketId.current}
+                  value={chatInput}
+                  onChange={setChatInput}
+                  onSend={handleSendChatMessage}
+                  disabled={false}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -592,7 +673,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-red-800 rounded-lg p-6 w-full max-w-sm">
             <h2 className="text-red-400 font-display text-xl tracking-widest mb-2 text-center">VOTE</h2>
-            {/* ← NEW: eliminated players see a watch-only notice */}
+
             {amEliminated ? (
               <p className="text-gray-600 font-mono text-xs text-center py-4">
                 💀 You are eliminated and cannot vote. Watching...
@@ -600,41 +681,43 @@ export default function GameScreen({ gameData, onGameEnd }) {
             ) : (
               <>
                 <p className="text-gray-500 font-mono text-xs text-center mb-4">
-                  Who is the Spy? ({votes.in}/{votes.total} votes cast)
+                  Who is the Spy?
                 </p>
-                <div className="space-y-2 mb-4">
-                  {activePlayers.map((p) => {
-                    const isMe = p.id === mySocketId.current;
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => !isMe && castVote(p.id)}
-                        disabled={!!myVote || isMe}
-                        className={`w-full py-3 rounded font-mono text-sm border transition-colors ${
-                          myVote === p.id
-                            ? 'border-red-500 bg-red-950 text-red-300'
-                            : isMe
-                            ? 'border-gray-800 text-gray-700 cursor-not-allowed'
-                            : 'border-gray-700 text-gray-300 hover:border-red-600 hover:text-red-300'
-                        }`}
-                      >
-                        {p.name} {isMe ? '(you)' : ''}
-                      </button>
-                    );
-                  })}
+
+                <div className="space-y-2">
+                  {activePlayers.map((player) => (
+                    <button
+                      key={player.id}
+                      onClick={() => castVote(player.id)}
+                      disabled={!!myVote || player.id === mySocketId.current}
+                      className={`w-full p-2 rounded border font-mono text-xs transition-colors ${
+                        player.id === mySocketId.current
+                          ? 'border-gray-800 bg-gray-900 text-gray-600 cursor-not-allowed'
+                          : myVote === player.id
+                          ? 'border-red-600 bg-red-950 text-red-300'
+                          : 'border-gray-800 bg-gray-950 hover:bg-gray-900 text-gray-300'
+                      }`}
+                    >
+                      {player.name}
+                    </button>
+                  ))}
+
                   <button
                     onClick={() => castVote('skip')}
                     disabled={!!myVote}
-                    className={`w-full py-3 rounded font-mono text-sm border transition-colors ${
+                    className={`w-full p-2 rounded border font-mono text-xs transition-colors ${
                       myVote === 'skip'
-                        ? 'border-blue-500 bg-blue-950 text-blue-300'
-                        : 'border-gray-700 text-gray-500 hover:border-blue-600 hover:text-blue-300'
+                        ? 'border-yellow-600 bg-yellow-950 text-yellow-300'
+                        : 'border-gray-800 bg-gray-950 hover:bg-gray-900 text-gray-300'
                     }`}
                   >
-                    Skip (don't eject anyone)
+                    SKIP
                   </button>
                 </div>
-                {myVote && <p className="text-green-600 font-mono text-xs text-center">✓ Vote cast. Waiting for others...</p>}
+
+                <p className="text-gray-600 font-mono text-xs text-center mt-4">
+                  Votes: {votes.in}/{votes.total}
+                </p>
               </>
             )}
           </div>

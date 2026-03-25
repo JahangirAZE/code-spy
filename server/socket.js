@@ -1,6 +1,7 @@
-const { createRoom, getRoom, removeRoom } = require('./gameState');
+const { createRoom, getRoom, removeRoom, rooms } = require('./gameState');
 const { getScenario, listScenarios } = require('./scenarios');
 const { generateRoomCode } = require('./roomCodeGenerator');
+const { runJavaTests } = require('./javaRunner');
 
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 6;
@@ -8,12 +9,242 @@ const ALLOWED_TIMERS = [5, 8, 10];
 const MAX_CHAT_MESSAGE_LENGTH = 100;
 const MAX_CHAT_HISTORY = 100;
 
-function canEditRegion(room, editorSocketId, targetPlayerId) {
-  if (!room || room.state !== 'playing') return false;
-  if (!room.players.some((p) => p.id === editorSocketId)) return false;
-  if (!room.players.some((p) => p.id === targetPlayerId)) return false;
+function buildTaskCard(scenario, taskId, role) {
+  const task = scenario.tasks[taskId];
+  if (!task) return null;
 
-  return editorSocketId === targetPlayerId;
+  if (role === 'spy') {
+    return {
+      id: task.id,
+      title: task.title,
+      method: task.method,
+      sabotage: task.sabotage,
+      cover: task.cover,
+      visibleTests: task.visibleTests || [],
+      dependsOn: task.dependsOn || []
+    };
+  }
+
+  return {
+    id: task.id,
+    title: task.title,
+    method: task.method,
+    rules: task.rules || [],
+    hint: task.hint || '',
+    visibleTests: task.visibleTests || [],
+    dependsOn: task.dependsOn || []
+  };
+}
+
+function getCompletedTaskCount(room) {
+  return Object.values(room.taskStatus).filter((value) => value === 'passed').length;
+}
+
+function getTotalTaskCount(room) {
+  return Object.keys(room.taskStatus).length;
+}
+
+function buildProgressPayload(room) {
+  const total = getTotalTaskCount(room);
+  const completed = getCompletedTaskCount(room);
+
+  return {
+    completed,
+    total,
+    percent: total === 0 ? 0 : Math.round((completed / total) * 100),
+    perPlayer: room.playerTaskProgress
+  };
+}
+
+function canEditSharedCode(room, socketId) {
+  if (!room || room.state !== 'playing') return false;
+  if (room.eliminatedPlayers.some((p) => p.id === socketId)) return false;
+  return room.players.some((p) => p.id === socketId);
+}
+
+function initializeGame(room) {
+  const scenario = getScenario(room.scenario);
+  const plan = scenario.roomPlanBuilder(room.players.length);
+
+  room.sharedCode = scenario.sharedCodeTemplate;
+  room.sharedCodeVersion = 0;
+  room.eliminatedPlayers = [];
+  room.votes = {};
+  room.taskStatus = {};
+  room.playerTaskQueues = {};
+  room.playerCurrentTask = {};
+  room.taskOwners = {};
+  room.playerTaskProgress = {};
+  room.taskTestResults = {};
+
+  const spyIndex = Math.floor(Math.random() * room.players.length);
+  room.spyId = room.players[spyIndex].id;
+
+  const coders = room.players.filter((player) => player.id !== room.spyId);
+  const spy = room.players.find((player) => player.id === room.spyId);
+
+  coders.forEach((player, index) => {
+    room.roles[player.id] = 'coder';
+    room.playerTaskQueues[player.id] = [...(plan.coderQueues[index] || [])];
+    room.playerCurrentTask[player.id] = room.playerTaskQueues[player.id][0] || null;
+    room.playerTaskProgress[player.id] = {
+      done: 0,
+      total: room.playerTaskQueues[player.id].length
+    };
+  });
+
+  if (spy) {
+    room.roles[spy.id] = 'spy';
+    room.playerTaskQueues[spy.id] = [...(plan.spyQueue || [])];
+    room.playerCurrentTask[spy.id] = room.playerTaskQueues[spy.id][0] || null;
+    room.playerTaskProgress[spy.id] = {
+      done: 0,
+      total: room.playerTaskQueues[spy.id].length
+    };
+  }
+
+  room.players.forEach((player) => {
+    const currentTaskId = room.playerCurrentTask[player.id];
+    if (currentTaskId) {
+      room.taskOwners[currentTaskId] = player.id;
+      room.taskStatus[currentTaskId] = 'active';
+      room.taskCards[player.id] = buildTaskCard(
+        scenario,
+        currentTaskId,
+        room.roles[player.id]
+      );
+    }
+    room.emergencyCalls[player.id] = 0;
+  });
+
+  room.state = 'playing';
+  room.gameEndTime = Date.now() + room.timerMinutes * 60 * 1000;
+}
+
+function getCurrentTask(room, playerId) {
+  return room.playerCurrentTask[playerId] || null;
+}
+
+function advancePlayerTask(room, playerId) {
+  const queue = room.playerTaskQueues[playerId] || [];
+  if (queue.length === 0) {
+    room.playerCurrentTask[playerId] = null;
+    room.taskCards[playerId] = null;
+    return null;
+  }
+
+  queue.shift();
+
+  const nextTaskId = queue[0] || null;
+  room.playerCurrentTask[playerId] = nextTaskId;
+
+  if (nextTaskId) {
+    room.taskStatus[nextTaskId] = 'active';
+    room.taskOwners[nextTaskId] = playerId;
+    const scenario = getScenario(room.scenario);
+    room.taskCards[playerId] = buildTaskCard(
+      scenario,
+      nextTaskId,
+      room.roles[playerId]
+    );
+  } else {
+    room.taskCards[playerId] = null;
+  }
+
+  return nextTaskId;
+}
+
+async function runTaskTestsForPlayer(room, playerId) {
+  const scenario = getScenario(room.scenario);
+  const taskId = getCurrentTask(room, playerId);
+  if (!taskId) {
+    return {
+      taskId: null,
+      compileError: null,
+      results: [],
+      passed: 0,
+      failed: 0,
+      taskCompleted: false
+    };
+  }
+
+  const task = scenario.tasks[taskId];
+  const allTestIds = [
+    ...(task.visibleTests || []).map((test) => test.id),
+    ...(task.hiddenTests || []).map((test) => test.id)
+  ];
+
+  const result = await runJavaTests(room.sharedCode, allTestIds);
+  const taskCompleted = !result.compileError && result.failed === 0;
+
+  room.taskTestResults[taskId] = result;
+
+  if (taskCompleted) {
+    room.taskStatus[taskId] = 'passed';
+    room.playerTaskProgress[playerId].done += 1;
+    advancePlayerTask(room, playerId);
+  }
+
+  return {
+    taskId,
+    compileError: result.compileError,
+    results: result.results,
+    passed: result.passed,
+    failed: result.failed,
+    taskCompleted
+  };
+}
+
+async function runFinalSuite(room) {
+  const scenario = getScenario(room.scenario);
+  const testIds = scenario.finalSuite.map((test) => test.id);
+  const result = await runJavaTests(room.sharedCode, testIds);
+
+  room.finalTestResults = {
+    total: testIds.length,
+    passed: result.passed,
+    failed: result.failed,
+    compileError: result.compileError,
+    tests: result.results.map((item) => {
+      const meta = scenario.finalSuite.find((test) => test.id === item.id);
+      return {
+        id: item.id,
+        desc: meta?.desc || item.id,
+        status: item.status,
+        message: item.message || ''
+      };
+    })
+  };
+
+  return room.finalTestResults;
+}
+
+async function endGame(room, roomCode, io, winner, message) {
+  if (room.gameTimeout) {
+    clearTimeout(room.gameTimeout);
+    room.gameTimeout = null;
+  }
+
+  room.state = 'ended';
+
+  const spyPlayer =
+    room.players.find((p) => p.id === room.spyId) ||
+    room.eliminatedPlayers.find((p) => p.id === room.spyId) ||
+    { name: 'Unknown', id: room.spyId };
+
+  const finalResults = await runFinalSuite(room);
+
+  io.to(roomCode).emit('game_end', {
+    winner,
+    message,
+    spyId: room.spyId,
+    spyName: spyPlayer.name,
+    spyTask: room.taskCards[room.spyId] || null,
+    finalCode: room.sharedCode,
+    finalTestResults: finalResults,
+    players: room.players,
+    eliminatedPlayers: room.eliminatedPlayers
+  });
 }
 
 function handleConnection(socket, io) {
@@ -48,7 +279,6 @@ function handleConnection(socket, io) {
       return socket.emit('error', { message: 'Room is full.' });
     }
 
-    room.chatMessages = room.chatMessages || [];
     room.players.push({ id: socket.id, name: playerName, ready: false });
     socket.join(roomCode);
 
@@ -66,7 +296,7 @@ function handleConnection(socket, io) {
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
       timerMinutes: room.timerMinutes,
-      chatMessages: room.chatMessages
+      chatMessages: room.chatMessages || []
     });
 
     console.log(`${playerName} joined room ${roomCode}`);
@@ -96,111 +326,110 @@ function handleConnection(socket, io) {
   socket.on('start_game', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
+
     if (room.players.length < room.minPlayers) {
       return socket.emit('error', { message: `Need at least ${room.minPlayers} players.` });
     }
 
-    room.chatMessages = room.chatMessages || [];
+    initializeGame(room);
 
-    const scenario = getScenario(room.scenario);
-    const spyIndex = Math.floor(Math.random() * room.players.length);
-    room.spyId = room.players[spyIndex].id;
-
-    let coderTaskIndex = 0;
-    room.players.forEach((p) => {
-      if (p.id === room.spyId) {
-        room.roles[p.id] = 'spy';
-        room.taskCards[p.id] = scenario.spyTask;
-      } else {
-        room.roles[p.id] = 'coder';
-        room.taskCards[p.id] = scenario.coderTasks[coderTaskIndex % scenario.coderTasks.length];
-        coderTaskIndex++;
-      }
-      room.emergencyCalls[p.id] = 0;
-    });
-
-    room.editorContent = {};
-    room.editorVersions = {};
-    room.eliminatedPlayers = [];
-
-    room.players.forEach((p) => {
-      room.editorContent[p.id] = `// ===== ${p.name}'s region =====\n// Write your code here\n`;
-      room.editorVersions[p.id] = 0;
-    });
-
-    room.state = 'playing';
-    room.gameEndTime = Date.now() + room.timerMinutes * 60 * 1000;
-
-    room.players.forEach((p) => {
-      const playerSocket = io.sockets.sockets.get(p.id);
+    room.players.forEach((player) => {
+      const playerSocket = io.sockets.sockets.get(player.id);
       if (!playerSocket) return;
+
       playerSocket.emit('game_started', {
-        role: room.roles[p.id],
-        taskCard: room.taskCards[p.id],
-        skeleton: scenario.skeleton,
-        scenario: { name: scenario.name, tests: scenario.tests },
+        role: room.roles[player.id],
+        taskCard: room.taskCards[player.id],
+        scenario: {
+          name: getScenario(room.scenario).name
+        },
         players: room.players,
         eliminatedPlayers: room.eliminatedPlayers,
-        editorContent: room.editorContent,
+        sharedCode: room.sharedCode,
+        sharedCodeVersion: room.sharedCodeVersion,
+        progress: buildProgressPayload(room),
         gameEndTime: room.gameEndTime,
-        isSpy: p.id === room.spyId,
-        chatMessages: room.chatMessages
+        isSpy: player.id === room.spyId,
+        roomCode,
+        playerName: player.name,
+        chatMessages: room.chatMessages || []
       });
     });
 
-    console.log(`game started in room ${roomCode}`);
-    console.log(`spy: ${room.players.find((p) => p.id === room.spyId)?.name}`);
-
     if (room.gameTimeout) clearTimeout(room.gameTimeout);
 
-    room.gameTimeout = setTimeout(() => {
-      const r = getRoom(roomCode);
-      if (r && r.state === 'playing') {
-        endGame(r, roomCode, io, 'spy', 'Time ran out! The Spy survives — Spy wins!');
+    room.gameTimeout = setTimeout(async () => {
+      const currentRoom = getRoom(roomCode);
+      if (currentRoom && currentRoom.state === 'playing') {
+        await endGame(currentRoom, roomCode, io, 'spy', 'Time ran out! The Spy survives — Spy wins!');
       }
     }, room.timerMinutes * 60 * 1000);
   });
 
-  socket.on('region_update', ({ roomCode, targetPlayerId, content, version }) => {
+  socket.on('shared_code_update', ({ roomCode, content, version }) => {
     const room = getRoom(roomCode);
     if (!room || room.state !== 'playing') return;
 
-    const isEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
-    if (isEliminated) {
-      return socket.emit('edit_rejected', {
-        targetPlayerId,
-        message: 'You have been eliminated and cannot edit.'
-      });
+    if (!canEditSharedCode(room, socket.id)) {
+      return socket.emit('edit_rejected', { message: 'You cannot edit the shared code.' });
     }
 
-    if (!canEditRegion(room, socket.id, targetPlayerId)) {
-      return socket.emit('edit_rejected', {
-        targetPlayerId,
-        message: 'You cannot edit this region.'
-      });
-    }
-
-    const serverVersion = room.editorVersions?.[targetPlayerId] || 0;
-    const isSpy = room.spyId === socket.id;
-    const isOwnRegion = socket.id === targetPlayerId;
-
-    if (isSpy && !isOwnRegion && version !== undefined && version < serverVersion - 2) {
-      return socket.emit('region_resync', {
-        targetPlayerId,
-        content: room.editorContent[targetPlayerId],
+    const serverVersion = room.sharedCodeVersion || 0;
+    if (version !== undefined && version < serverVersion - 2) {
+      return socket.emit('shared_code_resync', {
+        content: room.sharedCode,
         version: serverVersion
       });
     }
 
-    room.editorVersions[targetPlayerId] = serverVersion + 1;
-    room.editorContent[targetPlayerId] = content;
+    room.sharedCodeVersion = serverVersion + 1;
+    room.sharedCode = content;
 
-    socket.to(roomCode).emit('region_updated', {
+    socket.to(roomCode).emit('shared_code_updated', {
       editorId: socket.id,
-      targetPlayerId,
       content,
-      version: room.editorVersions[targetPlayerId]
+      version: room.sharedCodeVersion
     });
+  });
+
+  socket.on('run_task_tests', async ({ roomCode }) => {
+    const room = getRoom(roomCode);
+    if (!room || room.state !== 'playing') return;
+
+    const currentTaskId = getCurrentTask(room, socket.id);
+    if (!currentTaskId) {
+      return socket.emit('task_test_result', {
+        taskId: null,
+        compileError: null,
+        results: [],
+        passed: 0,
+        failed: 0,
+        taskCompleted: false,
+        progress: buildProgressPayload(room),
+        nextTaskCard: null
+      });
+    }
+
+    const result = await runTaskTestsForPlayer(room, socket.id);
+
+    socket.emit('task_test_result', {
+      ...result,
+      progress: buildProgressPayload(room),
+      nextTaskCard: room.taskCards[socket.id] || null
+    });
+
+    io.to(roomCode).emit('progress_updated', {
+      progress: buildProgressPayload(room),
+      sharedCodeVersion: room.sharedCodeVersion
+    });
+
+    const everyoneFinished = room.players.every((player) => {
+      return !room.playerCurrentTask[player.id];
+    });
+
+    if (everyoneFinished) {
+      await endGame(room, roomCode, io, 'coders', 'All assigned tasks were completed!');
+    }
   });
 
   socket.on('emergency_call', ({ roomCode }) => {
@@ -216,7 +445,7 @@ function handleConnection(socket, io) {
       return socket.emit('error', { message: 'You already used your Emergency Call.' });
     }
 
-    room.emergencyCalls[socket.id] = (room.emergencyCalls[socket.id] || 0) + 1;
+    room.emergencyCalls[socket.id] = 1;
     room.state = 'voting';
     room.votes = {};
     room.votingInitiator = socket.id;
@@ -227,7 +456,6 @@ function handleConnection(socket, io) {
       calledBy: caller?.name || 'Someone',
       discussionEndTime: room.discussionEndTime
     });
-    console.log(`emergency call in ${roomCode} by ${caller?.name}`);
   });
 
   socket.on('cast_vote', ({ roomCode, votedFor }) => {
@@ -244,8 +472,7 @@ function handleConnection(socket, io) {
 
     io.to(roomCode).emit('vote_update', { votesIn: totalVotes, totalPlayers });
 
-    const activePlayers = room.players.length;
-    if (totalVotes === activePlayers) {
+    if (totalVotes === totalPlayers) {
       resolveVote(room, roomCode, io);
     }
   });
@@ -265,8 +492,6 @@ function handleConnection(socket, io) {
 
     const safeMessage = normalizedMessage.slice(0, MAX_CHAT_MESSAGE_LENGTH);
 
-    room.chatMessages = room.chatMessages || [];
-
     const chatItem = {
       id: `${socket.id}-${Date.now()}`,
       senderId: socket.id,
@@ -282,12 +507,12 @@ function handleConnection(socket, io) {
     }
 
     io.to(roomCode).emit('chat_message', chatItem);
-  })
+  });
 
   socket.on('disconnect', () => {
     console.log(`disconnected: ${socket.id}`);
 
-    for (const [code, room] of require('./gameState').rooms) {
+    for (const [code, room] of rooms) {
       const playerIndex = room.players.findIndex((p) => p.id === socket.id);
       const isInEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
 
@@ -303,12 +528,7 @@ function handleConnection(socket, io) {
         if (playerIndex !== -1) {
           room.players.splice(playerIndex, 1);
         }
-
-        if (room.players.length === 0) {
-          removeRoom(code);
-        }
-
-        console.log(`player left ended room ${code}`);
+        if (room.players.length === 0) removeRoom(code);
         break;
       }
 
@@ -324,31 +544,18 @@ function handleConnection(socket, io) {
         });
 
         removeRoom(code);
-        console.log(`host left room ${code} — room destroyed`);
         break;
       }
 
       if (isSpy && isActiveGame) {
-        const spyPlayer =
-          leavingPlayer ||
-          room.eliminatedPlayers.find((p) => p.id === socket.id) ||
-          { name: 'The Spy' };
-
-        if (room.gameTimeout) {
-          clearTimeout(room.gameTimeout);
-          room.gameTimeout = null;
-        }
-
         io.to(code).emit('spy_left', {
-          spyName: spyPlayer.name,
-          spyTask: room.taskCards[room.spyId],
-          finalCode: room.editorContent,
-          players: room.players.filter((p) => p.id !== socket.id),
+          spyName: leavingPlayer?.name || 'The Spy',
+          finalCode: room.sharedCode,
+          players: room.players,
           eliminatedPlayers: room.eliminatedPlayers
         });
 
         room.state = 'ended';
-        console.log(`spy (${spyPlayer.name}) left room ${code}`);
         break;
       }
 
@@ -363,7 +570,9 @@ function handleConnection(socket, io) {
         maxPlayers: MAX_PLAYERS
       });
 
-      if (room.players.length === 0) removeRoom(code);
+      if (room.players.length === 0) {
+        removeRoom(code);
+      }
       break;
     }
   });
@@ -371,12 +580,14 @@ function handleConnection(socket, io) {
 
 function resolveVote(room, roomCode, io) {
   const voteCounts = {};
-  room.players.forEach((p) => { voteCounts[p.id] = 0; });
+  room.players.forEach((p) => {
+    voteCounts[p.id] = 0;
+  });
   voteCounts.skip = 0;
 
-  Object.values(room.votes).forEach((v) => {
-    if (voteCounts[v] !== undefined) voteCounts[v]++;
-    else voteCounts.skip++;
+  Object.values(room.votes).forEach((vote) => {
+    if (voteCounts[vote] !== undefined) voteCounts[vote] += 1;
+    else voteCounts.skip += 1;
   });
 
   let maxVotes = 0;
@@ -397,69 +608,61 @@ function resolveVote(room, roomCode, io) {
   const skipCount = voteCounts.skip || 0;
   if (tied || skipCount >= maxVotes) ejected = null;
 
-  if (ejected) {
-    const ejectedPlayer = room.players.find((p) => p.id === ejected);
-    const wasTheSpy = ejected === room.spyId;
-
-    if (ejectedPlayer) {
-      room.eliminatedPlayers.push({ id: ejectedPlayer.id, name: ejectedPlayer.name });
-    }
-
-    room.players = room.players.filter((p) => p.id !== ejected);
-
-    const remainingPlayers = room.players;
-    const spyStillAlive = remainingPlayers.some(p => p.id === room.spyId);
-
-    if (wasTheSpy) {
-      return endGame(
-        room,
-        roomCode,
-        io,
-        'coders',
-        `${ejectedPlayer?.name} was the Spy! Coders win!`
-      );
-    }
-
-    if (remainingPlayers.length === 2 && spyStillAlive) {
-      return endGame(
-        room,
-        roomCode,
-        io,
-        'spy',
-        'Only one coder left — Spy wins!'
-      );
-    }
-
+  if (!ejected) {
     room.state = 'playing';
     io.to(roomCode).emit('vote_result', {
-      ejected: ejectedPlayer?.name,
-      ejectedId: ejected,
+      ejected: null,
+      ejectedId: null,
       wasTheSpy: false,
       players: room.players,
       eliminatedPlayers: room.eliminatedPlayers
     });
-  }
-}
-
-function endGame(room, roomCode, io, winner, message) {
-  if (room.gameTimeout) {
-    clearTimeout(room.gameTimeout);
-    room.gameTimeout = null;
+    return;
   }
 
-  room.state = 'ended';
-  const spyPlayer = room.players.find((p) => p.id === room.spyId) || room.eliminatedPlayers.find((p) => p.id === room.spyId) || { name: 'Unknown', id: room.spyId };
+  const ejectedPlayer = room.players.find((p) => p.id === ejected);
+  const wasTheSpy = ejected === room.spyId;
 
-  io.to(roomCode).emit('game_end', {
-    winner,
-    message,
-    spyId: room.spyId,
-    spyName: spyPlayer.name,
-    spyTask: room.taskCards[room.spyId],
-    finalCode: room.editorContent,
+  if (ejectedPlayer) {
+    room.eliminatedPlayers.push({ id: ejectedPlayer.id, name: ejectedPlayer.name });
+  }
+
+  room.players = room.players.filter((p) => p.id !== ejected);
+
+  const remainingPlayers = room.players;
+  const spyStillAlive = remainingPlayers.some((p) => p.id === room.spyId);
+
+  if (wasTheSpy) {
+    return endGame(
+      room,
+      roomCode,
+      io,
+      'coders',
+      `${ejectedPlayer?.name} was the Spy! Coders win!`
+    );
+  }
+
+  if (remainingPlayers.length === 2 && spyStillAlive) {
+    return endGame(
+      room,
+      roomCode,
+      io,
+      'spy',
+      'Only one coder left — Spy wins!'
+    );
+  }
+
+  room.state = 'playing';
+  io.to(roomCode).emit('vote_result', {
+    ejected: ejectedPlayer?.name,
+    ejectedId: ejected,
+    wasTheSpy: false,
     players: room.players,
     eliminatedPlayers: room.eliminatedPlayers
   });
 }
 
-module.exports = { handleConnection, endGame };
+module.exports = {
+  handleConnection,
+  endGame
+};
