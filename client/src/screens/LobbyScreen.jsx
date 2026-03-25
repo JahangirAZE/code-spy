@@ -15,35 +15,59 @@ export default function LobbyScreen({ onGameStart }) {
   useEffect(() => {
     socket.connect();
 
-    socket.on('room_created', (data) => {
+    const onRoomCreated = (data) => {
       setRoomData({ ...data, isHost: true });
+      setSettings({
+        scenario: data.scenario || 'bank',
+        timerMinutes: data.timerMinutes || 8
+      });
       setPhase('waiting');
-    });
+    };
 
-    socket.on('joined_room', (data) => {
+    const onJoinedRoom = (data) => {
       setRoomData({ ...data, isHost: false });
+      setSettings({
+        scenario: data.scenario || 'bank',
+        timerMinutes: data.timerMinutes || 8
+      });
       setPhase('waiting');
-    });
+    };
 
-    socket.on('player_joined', ({ players, minPlayers, maxPlayers }) => {
+    const onPlayerJoined = ({ players, minPlayers, maxPlayers }) => {
       setRoomData(prev => prev ? { ...prev, players, minPlayers, maxPlayers } : prev);
-    });
+    };
 
-    socket.on('player_left', ({ players, minPlayers, maxPlayers }) => {
+    const onPlayerLeft = ({ players, minPlayers, maxPlayers }) => {
       setRoomData(prev => prev ? { ...prev, players, minPlayers, maxPlayers } : prev);
-    });
+    };
 
-    socket.on('settings_updated', (s) => {
+    const onSettingsUpdated = (s) => {
       setSettings({ scenario: s.scenario, timerMinutes: s.timerMinutes });
-    });
+    };
 
-    socket.on('game_started', (data) => {
+    const onGameStarted = (data) => {
       onGameStart({ ...data, roomCode: roomData?.roomCode, playerName });
-    });
+    };
 
-    socket.on('error', ({ message }) => setError(message));
+    const onError = ({ message }) => setError(message);
 
-    return () => socket.removeAllListeners();
+    socket.on('room_created', onRoomCreated);
+    socket.on('joined_room', onJoinedRoom);
+    socket.on('player_joined', onPlayerJoined);
+    socket.on('player_left', onPlayerLeft);
+    socket.on('settings_updated', onSettingsUpdated);
+    socket.on('game_started', onGameStarted);
+    socket.on('error', onError);
+
+    return () => {
+      socket.off('room_created', onRoomCreated);
+      socket.off('joined_room', onJoinedRoom);
+      socket.off('player_joined', onPlayerJoined);
+      socket.off('player_left', onPlayerLeft);
+      socket.off('settings_updated', onSettingsUpdated);
+      socket.off('game_started', onGameStarted);
+      socket.off('error', onError);
+    };
   }, [roomData?.roomCode, playerName, onGameStart]);
 
   function handleCreate() {
@@ -72,12 +96,9 @@ export default function LobbyScreen({ onGameStart }) {
     socket.emit('start_game', { roomCode: roomData.roomCode });
   }
 
-  const inputClass =
-    'w-full bg-gray-900 border border-green-800 text-green-300 font-mono px-4 py-3 rounded focus:outline-none focus:border-green-400 placeholder-gray-600';
-  const btnPrimary =
-    'w-full bg-green-600 hover:bg-green-500 text-black font-bold font-mono py-3 rounded transition-colors';
-  const btnSecondary =
-    'w-full bg-transparent border border-green-700 hover:border-green-400 text-green-400 font-mono py-3 rounded transition-colors';
+  const inputClass = 'w-full bg-gray-900 border border-green-800 text-green-300 font-mono px-4 py-3 rounded focus:outline-none focus:border-green-400 placeholder-gray-600';
+  const btnPrimary = 'w-full bg-green-600 hover:bg-green-500 text-black font-bold font-mono py-3 rounded transition-colors';
+  const btnSecondary = 'w-full bg-transparent border border-green-700 hover:border-green-400 text-green-400 font-mono py-3 rounded transition-colors';
 
   if (phase === 'home') return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">

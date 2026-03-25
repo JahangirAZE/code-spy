@@ -1,10 +1,10 @@
-const { v4: uuidv4 } = require('uuid');
 const { createRoom, getRoom, removeRoom } = require('./gameState');
 const { getScenario, listScenarios } = require('./scenarios');
 const { generateRoomCode } = require('./roomCodeGenerator');
 
 const MIN_PLAYERS = 4;
 const MAX_PLAYERS = 6;
+const ALLOWED_TIMERS = [5, 8, 10];
 
 function canEditRegion(room, editorSocketId, targetPlayerId) {
   if (!room || room.state !== 'playing') return false;
@@ -15,27 +15,29 @@ function canEditRegion(room, editorSocketId, targetPlayerId) {
 }
 
 function handleConnection(socket, io) {
-  console.log(`🔌 Connected: ${socket.id}`);
+  console.log(`connected: ${socket.id}`);
 
   socket.on('create_room', ({ playerName }) => {
     const roomCode = generateRoomCode();
     const room = createRoom(roomCode, socket.id, playerName);
+    room.timerMinutes = room.timerMinutes || 8;
     socket.join(roomCode);
     socket.emit('room_created', {
       roomCode,
       players: room.players,
       scenarios: listScenarios(),
       minPlayers: MIN_PLAYERS,
-      maxPlayers: MAX_PLAYERS
+      maxPlayers: MAX_PLAYERS,
+      timerMinutes: room.timerMinutes
     });
-    console.log(`🏠 Room ${roomCode} created by ${playerName}`);
+    console.log(`room ${roomCode} created by ${playerName}`);
   });
 
   socket.on('join_room', ({ roomCode, playerName }) => {
     const room = getRoom(roomCode);
     if (!room) return socket.emit('error', { message: 'Room not found.' });
     if (room.state !== 'lobby') return socket.emit('error', { message: 'Game already started.' });
-    if (room.players.length >= MAX_PLAYERS) {
+    if (room.players.length >= room.maxPlayers) {
       return socket.emit('error', { message: 'Room is full.' });
     }
 
@@ -54,18 +56,27 @@ function handleConnection(socket, io) {
       isHost: false,
       scenarios: listScenarios(),
       minPlayers: MIN_PLAYERS,
-      maxPlayers: MAX_PLAYERS
+      maxPlayers: MAX_PLAYERS,
+      timerMinutes: room.timerMinutes
     });
 
-    console.log(`👤 ${playerName} joined room ${roomCode}`);
+    console.log(`${playerName} joined room ${roomCode}`);
   });
 
   socket.on('update_settings', ({ roomCode, language, scenario, timerMinutes }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
+
     if (language) room.language = language;
     if (scenario) room.scenario = scenario;
-    if (timerMinutes) room.timerMinutes = timerMinutes;
+
+    if (timerMinutes !== undefined) {
+      const parsedTimer = Number(timerMinutes);
+      if (ALLOWED_TIMERS.includes(parsedTimer)) {
+        room.timerMinutes = parsedTimer;
+      }
+    }
+
     io.to(roomCode).emit('settings_updated', {
       language: room.language,
       scenario: room.scenario,
@@ -76,12 +87,11 @@ function handleConnection(socket, io) {
   socket.on('start_game', ({ roomCode }) => {
     const room = getRoom(roomCode);
     if (!room || room.hostId !== socket.id) return;
-    if (room.players.length < MIN_PLAYERS) {
-      return socket.emit('error', { message: `Need at least ${MIN_PLAYERS} players.` });
+    if (room.players.length < room.minPlayers) {
+      return socket.emit('error', { message: `Need at least ${room.minPlayers} players.` });
     }
 
     const scenario = getScenario(room.scenario);
-
     const spyIndex = Math.floor(Math.random() * room.players.length);
     room.spyId = room.players[spyIndex].id;
 
@@ -126,9 +136,12 @@ function handleConnection(socket, io) {
       });
     });
 
-    console.log(`🎮 Game started in room ${roomCode}. Spy: ${room.players.find((p) => p.id === room.spyId)?.name}`);
+    console.log(`game started in room ${roomCode}`);
+    console.log(`spy: ${room.players.find((p) => p.id === room.spyId)?.name}`);
 
-    setTimeout(() => {
+    if (room.gameTimeout) clearTimeout(room.gameTimeout);
+
+    room.gameTimeout = setTimeout(() => {
       const r = getRoom(roomCode);
       if (r && r.state === 'playing') {
         endGame(r, roomCode, io, 'spy', 'Time ran out! The Spy survives — Spy wins!');
@@ -155,9 +168,9 @@ function handleConnection(socket, io) {
       });
     }
 
+    const serverVersion = room.editorVersions?.[targetPlayerId] || 0;
     const isSpy = room.spyId === socket.id;
     const isOwnRegion = socket.id === targetPlayerId;
-    const serverVersion = room.editorVersions?.[targetPlayerId] || 0;
 
     if (isSpy && !isOwnRegion && version !== undefined && version < serverVersion - 2) {
       return socket.emit('region_resync', {
@@ -202,7 +215,7 @@ function handleConnection(socket, io) {
       calledBy: caller?.name || 'Someone',
       discussionEndTime: room.discussionEndTime
     });
-    console.log(`🚨 Emergency call in ${roomCode} by ${caller?.name}`);
+    console.log(`emergency call in ${roomCode} by ${caller?.name}`);
   });
 
   socket.on('cast_vote', ({ roomCode, votedFor }) => {
@@ -225,20 +238,86 @@ function handleConnection(socket, io) {
   });
 
   socket.on('disconnect', () => {
-    console.log(`❌ Disconnected: ${socket.id}`);
+    console.log(`disconnected: ${socket.id}`);
+
     for (const [code, room] of require('./gameState').rooms) {
-      const idx = room.players.findIndex((p) => p.id === socket.id);
-      if (idx !== -1) {
-        room.players.splice(idx, 1);
-        io.to(code).emit('player_left', { 
-          players: room.players, 
-          leftId: socket.id,
-          minPlayers: MIN_PLAYERS,
-          maxPlayers: MAX_PLAYERS
-        });
-        if (room.players.length === 0) removeRoom(code);
+      const playerIndex = room.players.findIndex((p) => p.id === socket.id);
+      const isInEliminated = room.eliminatedPlayers.some((p) => p.id === socket.id);
+
+      if (playerIndex === -1 && !isInEliminated) continue;
+
+      const leavingPlayer = room.players[playerIndex];
+      const isHost = room.hostId === socket.id;
+      const isSpy = room.spyId === socket.id;
+      const isActiveGame = room.state === 'playing' || room.state === 'voting';
+      const isEnded = room.state === 'ended';
+
+      if (isEnded) {
+        if (playerIndex !== -1) {
+          room.players.splice(playerIndex, 1);
+        }
+
+        if (room.players.length === 0) {
+          removeRoom(code);
+        }
+
+        console.log(`player left ended room ${code}`);
         break;
       }
+
+      if (isHost) {
+        if (room.gameTimeout) {
+          clearTimeout(room.gameTimeout);
+          room.gameTimeout = null;
+        }
+
+        io.to(code).emit('host_disconnected', {
+          hostName: leavingPlayer?.name || 'The host',
+          wasInGame: isActiveGame
+        });
+
+        removeRoom(code);
+        console.log(`host left room ${code} — room destroyed`);
+        break;
+      }
+
+      if (isSpy && isActiveGame) {
+        const spyPlayer =
+          leavingPlayer ||
+          room.eliminatedPlayers.find((p) => p.id === socket.id) ||
+          { name: 'The Spy' };
+
+        if (room.gameTimeout) {
+          clearTimeout(room.gameTimeout);
+          room.gameTimeout = null;
+        }
+
+        io.to(code).emit('spy_left', {
+          spyName: spyPlayer.name,
+          spyTask: room.taskCards[room.spyId],
+          finalCode: room.editorContent,
+          players: room.players.filter((p) => p.id !== socket.id),
+          eliminatedPlayers: room.eliminatedPlayers
+        });
+
+        room.state = 'ended';
+        console.log(`spy (${spyPlayer.name}) left room ${code}`);
+        break;
+      }
+
+      if (playerIndex !== -1) {
+        room.players.splice(playerIndex, 1);
+      }
+
+      io.to(code).emit('player_left', {
+        players: room.players,
+        leftId: socket.id,
+        minPlayers: MIN_PLAYERS,
+        maxPlayers: MAX_PLAYERS
+      });
+
+      if (room.players.length === 0) removeRoom(code);
+      break;
     }
   });
 }
@@ -303,10 +382,13 @@ function resolveVote(room, roomCode, io) {
 }
 
 function endGame(room, roomCode, io, winner, message) {
+  if (room.gameTimeout) {
+    clearTimeout(room.gameTimeout);
+    room.gameTimeout = null;
+  }
+
   room.state = 'ended';
-  const spyPlayer = room.players.find((p) => p.id === room.spyId) ||
-    room.eliminatedPlayers.find((p) => p.id === room.spyId) ||
-    { name: 'Unknown', id: room.spyId };
+  const spyPlayer = room.players.find((p) => p.id === room.spyId) || room.eliminatedPlayers.find((p) => p.id === room.spyId) || { name: 'Unknown', id: room.spyId };
 
   io.to(roomCode).emit('game_end', {
     winner,

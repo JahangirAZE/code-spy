@@ -28,6 +28,7 @@ function createRoom(roomCode, hostId, hostName) {
     maxPlayers: 6,
     votingInitiator: null,
     discussionEndTime: null,
+    gameTimeout: null
   };
   rooms.set(roomCode, room);
   return room;
@@ -38,6 +39,10 @@ function getRoom(roomCode) {
 }
 
 function removeRoom(roomCode) {
+  const room = rooms.get(roomCode);
+  if (room?.gameTimeout) {
+    clearTimeout(room.gameTimeout);
+  }
   rooms.delete(roomCode);
 }
 
