@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import debounce from 'lodash/debounce';
 import socket from '../utils/socket';
 import NotificationFeed from './NotificationFeed';
 import RegionEditor from './RegionEditor';
+import useGameNotifications from '../utils/useGameNotifications';
 
 export default function GameScreen({ gameData, onGameEnd }) {
   const {
@@ -29,18 +30,30 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const [emergencyUsed, setEmergencyUsed] = useState(false);
   const [activePlayers, setActivePlayers] = useState(players || []);
   const [eliminatedPlayers, setEliminatedPlayers] = useState(initialEliminated);
-  const [typingPlayers, setTypingPlayers] = useState({});
-  const [notifications, setNotifications] = useState([]);
 
-  const typingTimeoutsRef = useRef({});
-  const notificationTimersRef = useRef({});
   const oneMinuteNotifiedRef = useRef(false);
   const mySocketId = useRef(socket.id);
   const editorVersionsRef = useRef({});
 
+  const {
+    notifications,
+    typingPlayers,
+    addOrUpdateNotification,
+    removeNotification,
+    pushTimedNotification,
+    pushPersistentNotification,
+    markPlayerTyping,
+    clearTypingState
+  } = useGameNotifications(eliminatedPlayers);
+
   const amEliminated = eliminatedPlayers.some((p) => p.id === mySocketId.current);
 
-  const language = skeleton?.includes('public class') ? 'java' : skeleton?.includes('def ') ? 'python' : 'csharp';
+  const language =
+    skeleton?.includes('public class')
+      ? 'java'
+      : skeleton?.includes('def ')
+      ? 'python'
+      : 'csharp';
 
   useEffect(() => {
     editorVersionsRef.current = editorVersions;
@@ -49,77 +62,14 @@ export default function GameScreen({ gameData, onGameEnd }) {
   const debouncedEmit = useMemo(
     () =>
       debounce((roomCodeParam, targetPlayerId, content, version) => {
-        socket.emit('region_update', { roomCode: roomCodeParam, targetPlayerId, content, version });
+        socket.emit('region_update', {
+          roomCode: roomCodeParam,
+          targetPlayerId,
+          content,
+          version
+        });
       }, 80),
     []
-  );
-
-  const addOrUpdateNotification = useCallback((item) => {
-    setNotifications((prev) => {
-      const exists = prev.find((n) => n.id === item.id);
-      if (exists) {
-        return prev.map((n) => (n.id === item.id ? { ...n, ...item } : n));
-      }
-      return [item, ...prev].slice(0, 30);
-    });
-  }, []);
-
-  const removeNotification = useCallback((id) => {
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-  }, []);
-
-  const pushTimedNotification = useCallback(
-    (item, duration = 3000) => {
-      addOrUpdateNotification(item);
-      if (notificationTimersRef.current[item.id]) {
-        clearTimeout(notificationTimersRef.current[item.id]);
-      }
-      notificationTimersRef.current[item.id] = setTimeout(() => {
-        removeNotification(item.id);
-        delete notificationTimersRef.current[item.id];
-      }, duration);
-    },
-    [addOrUpdateNotification, removeNotification]
-  );
-
-  const pushPersistentNotification = useCallback(
-    (item) => {
-      addOrUpdateNotification(item);
-    },
-    [addOrUpdateNotification]
-  );
-
-  const markPlayerTyping = useCallback(
-    (playerId, name) => {
-      const isElim = eliminatedPlayers.some((p) => p.id === playerId);
-      if (isElim) return;
-
-      setTypingPlayers((prev) => ({ ...prev, [playerId]: true }));
-      addOrUpdateNotification({
-        id: `typing-${playerId}`,
-        type: 'typing',
-        message: `✍ ${name} is typing...`,
-        createdAt: Date.now()
-      });
-
-      if (typingTimeoutsRef.current[playerId]) {
-        clearTimeout(typingTimeoutsRef.current[playerId]);
-      }
-      if (notificationTimersRef.current[`typing-${playerId}`]) {
-        clearTimeout(notificationTimersRef.current[`typing-${playerId}`]);
-      }
-
-      typingTimeoutsRef.current[playerId] = setTimeout(() => {
-        setTypingPlayers((prev) => {
-          const next = { ...prev };
-          delete next[playerId];
-          return next;
-        });
-        removeNotification(`typing-${playerId}`);
-        delete typingTimeoutsRef.current[playerId];
-      }, 1500);
-    },
-    [addOrUpdateNotification, removeNotification, eliminatedPlayers]
   );
 
   useEffect(() => {
@@ -127,15 +77,21 @@ export default function GameScreen({ gameData, onGameEnd }) {
       const remaining = Math.max(0, gameEndTime - Date.now());
       const m = Math.floor(remaining / 60000);
       const s = Math.floor((remaining % 60000) / 1000);
+
       setTimeLeft(`${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
-      if (remaining === 0) clearInterval(tick);
+
+      if (remaining === 0) {
+        clearInterval(tick);
+      }
     }, 500);
+
     return () => clearInterval(tick);
   }, [gameEndTime]);
 
   useEffect(() => {
     const tick = setInterval(() => {
       const remaining = Math.max(0, gameEndTime - Date.now());
+
       if (remaining <= 60000 && !oneMinuteNotifiedRef.current) {
         oneMinuteNotifiedRef.current = true;
         pushPersistentNotification({
@@ -146,11 +102,13 @@ export default function GameScreen({ gameData, onGameEnd }) {
         });
       }
     }, 1000);
+
     return () => clearInterval(tick);
   }, [gameEndTime, pushPersistentNotification]);
 
   useEffect(() => {
     if (!frozen || discussionLeft === null) return;
+
     addOrUpdateNotification({
       id: 'discussion-countdown',
       type: 'timer',
@@ -163,36 +121,45 @@ export default function GameScreen({ gameData, onGameEnd }) {
         if (prev <= 1) {
           clearInterval(tick);
           setVotingPhase(true);
+
           addOrUpdateNotification({
             id: 'voting-started',
             type: 'system',
             message: '🗳 Voting has started',
             createdAt: Date.now()
           });
+
           removeNotification('discussion-countdown');
           return 0;
         }
+
         const next = prev - 1;
+
         addOrUpdateNotification({
           id: 'discussion-countdown',
           type: 'timer',
           message: `🗳 Voting starts in ${next}s`,
           createdAt: Date.now()
         });
+
         return next;
       });
     }, 1000);
+
     return () => clearInterval(tick);
   }, [frozen, discussionLeft, addOrUpdateNotification, removeNotification]);
 
   useEffect(() => {
     const handleCodeUpdate = ({ playerId, content }) => {
-      const isElim = eliminatedPlayers.some((p) => p.id === playerId);
-      if (isElim) return;
+      const isEliminated = eliminatedPlayers.some((player) => player.id === playerId);
+      if (isEliminated) return;
 
       setEditorContent((prev) => ({ ...prev, [playerId]: content }));
-      const player = activePlayers.find((p) => p.id === playerId);
-      if (player) markPlayerTyping(playerId, player.name);
+
+      const player = activePlayers.find((currentPlayer) => currentPlayer.id === playerId);
+      if (player) {
+        markPlayerTyping(playerId, player.name);
+      }
     };
 
     const handleFreezeEditor = ({ calledBy, discussionEndTime }) => {
@@ -200,6 +167,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setDiscussionLeft(Math.ceil((discussionEndTime - Date.now()) / 1000));
       setVotingPhase(false);
       setMyVote(null);
+
       pushPersistentNotification({
         id: `emergency-${Date.now()}`,
         type: 'emergency',
@@ -212,15 +180,25 @@ export default function GameScreen({ gameData, onGameEnd }) {
       setVotes({ in: votesIn, total: totalPlayers });
     };
 
-    const handleVoteResult = ({ ejected, ejectedId, wasTheSpy, players: updatedPlayers, eliminatedPlayers: updatedEliminated }) => {
-      if (updatedEliminated) setEliminatedPlayers(updatedEliminated);
+    const handleVoteResult = ({
+      ejected,
+      ejectedId,
+      wasTheSpy,
+      players: updatedPlayers,
+      eliminatedPlayers: updatedEliminated
+    }) => {
+      if (updatedEliminated) {
+        setEliminatedPlayers(updatedEliminated);
+      }
 
       setActivePlayers(updatedPlayers);
       setFrozen(false);
       setVotingPhase(false);
       setDiscussionLeft(null);
+
       removeNotification('discussion-countdown');
       removeNotification('voting-started');
+
       pushPersistentNotification({
         id: `vote-${Date.now()}`,
         type: 'system',
@@ -241,27 +219,24 @@ export default function GameScreen({ gameData, onGameEnd }) {
     };
 
     const handlePlayerLeft = ({ players: updatedPlayers, leftId }) => {
-      const leftPlayer = activePlayers.find((p) => p.id === leftId);
+      const leftPlayer = activePlayers.find((player) => player.id === leftId);
+
       setActivePlayers(updatedPlayers);
+
       if (leftId) {
-        setTypingPlayers((prev) => {
-          const next = { ...prev };
-          delete next[leftId];
-          return next;
-        });
-        removeNotification(`typing-${leftId}`);
-        if (typingTimeoutsRef.current[leftId]) {
-          clearTimeout(typingTimeoutsRef.current[leftId]);
-          delete typingTimeoutsRef.current[leftId];
-        }
+        clearTypingState(leftId);
       }
+
       if (leftPlayer) {
-        pushTimedNotification({
-          id: `left-${leftId}-${Date.now()}`,
-          type: 'system',
-          message: `👋 ${leftPlayer.name} left the room`,
-          createdAt: Date.now()
-        }, 5000);
+        pushTimedNotification(
+          {
+            id: `left-${leftId}-${Date.now()}`,
+            type: 'system',
+            message: `👋 ${leftPlayer.name} left the room`,
+            createdAt: Date.now()
+          },
+          5000
+        );
       }
     };
 
@@ -273,14 +248,17 @@ export default function GameScreen({ gameData, onGameEnd }) {
       if (editorId === mySocketId.current) return;
       if (targetPlayerId === mySocketId.current) return;
 
-      const isElim = eliminatedPlayers.some((p) => p.id === editorId);
-      if (isElim) return;
+      const isEliminated = eliminatedPlayers.some((player) => player.id === editorId);
+      if (isEliminated) return;
 
       setEditorContent((prev) => ({ ...prev, [targetPlayerId]: content }));
       setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: version }));
       editorVersionsRef.current[targetPlayerId] = version;
-      const editorPlayer = activePlayers.find((p) => p.id === editorId);
-      if (editorPlayer) markPlayerTyping(editorId, editorPlayer.name);
+
+      const editorPlayer = activePlayers.find((player) => player.id === editorId);
+      if (editorPlayer) {
+        markPlayerTyping(editorId, editorPlayer.name);
+      }
     };
 
     const handleRegionResync = ({ targetPlayerId, content, version }) => {
@@ -289,12 +267,15 @@ export default function GameScreen({ gameData, onGameEnd }) {
     };
 
     const handleEditRejected = ({ message }) => {
-      pushTimedNotification({
-        id: `reject-${Date.now()}`,
-        type: 'warning',
-        message: `🔒 ${message}`,
-        createdAt: Date.now()
-      }, 2500);
+      pushTimedNotification(
+        {
+          id: `reject-${Date.now()}`,
+          type: 'warning',
+          message: `🔒 ${message}`,
+          createdAt: Date.now()
+        },
+        2500
+      );
     };
 
     socket.on('code_update', handleCodeUpdate);
@@ -307,9 +288,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
     socket.on('region_resync', handleRegionResync);
     socket.on('edit_rejected', handleEditRejected);
 
-    const typingTimeouts = typingTimeoutsRef.current;
-    const notificationTimers = notificationTimersRef.current;
-
     return () => {
       socket.off('code_update', handleCodeUpdate);
       socket.off('freeze_editor', handleFreezeEditor);
@@ -320,8 +298,6 @@ export default function GameScreen({ gameData, onGameEnd }) {
       socket.off('region_updated', handleRegionUpdated);
       socket.off('region_resync', handleRegionResync);
       socket.off('edit_rejected', handleEditRejected);
-      Object.values(typingTimeouts).forEach(clearTimeout);
-      Object.values(notificationTimers).forEach(clearTimeout);
       debouncedEmit.cancel();
     };
   }, [
@@ -332,6 +308,8 @@ export default function GameScreen({ gameData, onGameEnd }) {
     pushTimedNotification,
     pushPersistentNotification,
     removeNotification,
+    addOrUpdateNotification,
+    clearTypingState,
     debouncedEmit
   ]);
 
@@ -340,13 +318,17 @@ export default function GameScreen({ gameData, onGameEnd }) {
     if (frozen) return;
 
     const canEdit = targetPlayerId === mySocketId.current;
+
     if (!canEdit) {
-      pushTimedNotification({
-        id: `forbidden-${Date.now()}`,
-        type: 'warning',
-        message: '🔒 You cannot edit this region',
-        createdAt: Date.now()
-      }, 2000);
+      pushTimedNotification(
+        {
+          id: `forbidden-${Date.now()}`,
+          type: 'warning',
+          message: '🔒 You cannot edit this region',
+          createdAt: Date.now()
+        },
+        2000
+      );
       return;
     }
 
@@ -355,7 +337,12 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
     const currentVersion = editorVersionsRef.current[targetPlayerId] || 0;
     editorVersionsRef.current[targetPlayerId] = currentVersion + 1;
-    setEditorVersions((prev) => ({ ...prev, [targetPlayerId]: currentVersion + 1 }));
+
+    setEditorVersions((prev) => ({
+      ...prev,
+      [targetPlayerId]: currentVersion + 1
+    }));
+
     debouncedEmit(roomCode, targetPlayerId, value, currentVersion);
   }
 
@@ -373,6 +360,7 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const [mins = '00'] = timeLeft.split(':');
   const parsedMins = parseInt(mins, 10);
+
   const timerColor =
     parsedMins <= 1
       ? 'text-red-400 blink'
@@ -382,7 +370,10 @@ export default function GameScreen({ gameData, onGameEnd }) {
 
   const allPlayersForSidebar = [
     ...activePlayers,
-    ...eliminatedPlayers.map((p) => ({ ...p, eliminated: true }))
+    ...eliminatedPlayers.map((player) => ({
+      ...player,
+      eliminated: true
+    }))
   ];
 
   return (
