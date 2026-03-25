@@ -110,9 +110,12 @@ export default function useGameNotifications(eliminatedPlayers) {
   );
 
   useEffect(() => {
+    const typingTimeouts = typingTimeoutsRef.current;
+    const notificationTimers = notificationTimersRef.current;
+
     return () => {
-      Object.values(typingTimeoutsRef.current).forEach(clearTimeout);
-      Object.values(notificationTimersRef.current).forEach(clearTimeout);
+      Object.values(typingTimeouts).forEach(clearTimeout);
+      Object.values(notificationTimers).forEach(clearTimeout);
     };
   }, []);
 
